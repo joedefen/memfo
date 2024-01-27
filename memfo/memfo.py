@@ -47,7 +47,6 @@ def ago_str(delta_secs, signed=False):
 
 ##############################################################################
 ##   human()
-##############################################################################
 def human(number):
     """ Return a concise number description."""
     if number < 0:
@@ -60,6 +59,10 @@ def human(number):
             return f'{number:.1f}{suffix}'
     return '' # impossible, but make pylint happy
 
+##############################################################################
+def clamp(least, value, most):
+    """ Constrain a number between to values """
+    return least if least > value else most if value > most else value
 
 class MemFo:
     """ TBD """
@@ -67,8 +70,8 @@ class MemFo:
     max_value = 999*1000*1000*1000
     def __init__(self, opts):
         assert not MemFo.singleton
-        self.singleton = self
-        self.mono_zero = time.monotonic()
+
+        self.mono_start = time.monotonic()
         self.fh = open('/proc/meminfo', 'r', encoding='utf-8')
         self.DB = opts.DB
         self.dump = opts.dump
@@ -76,12 +79,14 @@ class MemFo:
         if self.vmalloc_total:
             MemFo.max_value *= 1000
         self.zeros = opts.zeros
+        self.interval = clamp(0.5, opts.interval_sec, 3600.0)
 
         self.units, self.divisor, self.data_width = opts.units, 0, 0
         self.delta = False # whether to show deltas
         self.win = None  # PowerWindow
         self.spin = None # Option Spinner
         self.mode = 'normal' # or 'edit' or 'help'
+        self.edit_mode = False # true in when editing
         self.infos = []
         self.loops_per_info = 1
         self.loops_fro_store = 0
@@ -103,8 +108,8 @@ class MemFo:
         self.spin = OptionSpinner()
 #       self.spin.add_key('mode', '? - help screen',
 #                         vals=['normal', 'help'], obj=self)
-#       self.spin.add_key('kill_mode', 'K - kill mode', vals=[False, True],
-#               comments='Select line + ENTER to kill selected', obj=self.opts)
+        self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
+                comments='Select line and use "edit" key', obj=self)
 #       self.spin.add_key('fit_to_window', 'f - fit rows to window',
 #                         vals=[False, True], obj=self.opts)
 #       self.spin.add_key('groupby', 'g - group by',
@@ -180,16 +185,19 @@ class MemFo:
     def render_slices(self, infos, count=5000):
         """ TBD """
         lines = []
-        line = f'{self.units} u:units d:deltas z=zeros'
+        delta = 'DELTA' if self.delta else 'delta'
+        zeros = 'ZEROS' if self.zeros else 'zeros'
+        edit = 'EDIT' if self.edit_mode else 'edit'
+        line = f'u:{self.units} d:{delta} z={zeros} e={edit}'
         lines.append(line)
         row_cnt = 1
         rows = {}
 
         for ii, info in enumerate(infos):
-            ago = f'{ago_str(info["_mono"]-self.mono_zero)}'
+            ago = f'{ago_str(info["_mono"]-self.mono_start)}'
             for key in list(info.keys())[:count]:
                 if key.startswith('_'):
-                    ago = f'{ago_str(info["_mono"]-self.mono_zero)}'
+                    ago = f'{ago_str(info["_mono"]-self.mono_start)}'
                     line = f'{ago:>{self.data_width}}'
                     if ii == len(infos)-1:
                         time_str = datetime.now().strftime("%m/%d %H:%M:%S")
@@ -257,10 +265,17 @@ class MemFo:
             self.infos[-1] = info
             self.loops_fro_store += 1
         if self.loops_fro_store >= self.loops_per_info:
-            self.loops_fro_store = 0
-            if len(self.infos) > MAX_INFOS:
-                self.infos = [self.infos[i] for i in range(0, MAX_INFOS+1, 2)]
-                self.loops_per_info *= 2
+            floor_s = self.interval*self.loops_per_info * 0.95
+            delta_s = info['_mono'] - self.infos[-2]['_mono']
+            if delta_s < floor_s:
+                # push out closing this bucket
+                self.loops_fro_store -= 1
+            else:
+                self.loops_fro_store = 0
+                if len(self.infos) > MAX_INFOS:
+                    self.infos = [self.infos[i]
+                               for i in range(0, MAX_INFOS+1, 2)]
+                    self.loops_per_info *= 2
 
         # print([ago_str(info['_mono']-self.mono_zero) for info in self.infos])
 
@@ -314,9 +329,9 @@ class MemFo:
 #               elif key in (ord('?'), ):
 #                   self.window.set_pick_mode(False if self.mode == 'help'
 #                                          else self.opts.kill_mode)
-#               elif key in (ord('K'), ):
-#                   if self.mode == 'normal':
-#                       self.window.set_pick_mode(self.opts.kill_mode)
+                elif key in (ord('e'), ):
+                    if self.mode in ('normal', 'edit'):
+                        self.win.set_pick_mode(self.edit_mode)
 
 #           elif key in (curses.KEY_ENTER, 10):
 #               if self.mode == 'help':
@@ -349,7 +364,7 @@ class MemFo:
             for line in self.report_lines[2:]:
                 self.win.add_body(line)
             self.win.render()
-            do_key(self.win.prompt(seconds=1.0))
+            do_key(self.win.prompt(seconds=self.interval))
 
     def loop(self):
         """ The main loop for the program """
@@ -359,8 +374,8 @@ class MemFo:
             if self.dump:
                 print('\n' + '\n'.join(self.report_lines) + '\n')
                 if self.DB:
-                    print([ago_str(info['_mono']-self.mono_zero) for info in slices])
-                time.sleep(1.0)
+                    print([ago_str(info['_mono']-self.mono_start) for info in slices])
+                time.sleep(self.interval)
                 continue
             else:
                 self.do_window()
@@ -376,6 +391,8 @@ def main():
 #           help='add snapshots limited to value per subvol [1<=val<=8]')
 #   parser.add_argument('-L', '--label', type=str,
 #           help='add given label to -s snapshots')
+    parser.add_argument('-i', '--interval-sec', type=float, default=1.0,
+            help='loop interval in seconds [dflt=1.0] ')
     parser.add_argument('--vmalloc-total', action="store_true",
             help='Show "VmallocTotal" row (which is mostly useless)')
     parser.add_argument('-z', '--zeros', action="store_true",
