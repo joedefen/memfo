@@ -468,12 +468,13 @@ class MemFo:
             self.update_report_data()
 
             if self.dump:
-                texts = [row.text for row in self.report_rows]
+                texts = [f'{row.text} {row.key}' for row in self.report_rows.values()
+                         if not row.key.startswith('_')]
                 print('\n' + '\n'.join(texts) + '\n')
                 if self.DB:
                     print([ago_str(info['_mono']-self.mono_start) for info in slices])
                 time.sleep(self.interval)
-                continue
+                break
             else:
                 self.do_window()
 
@@ -484,6 +485,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser()
+    parser.add_argument('-u', '--units', choices=('KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'),
+            default='MiB', help='units of memory [dflt=MiB]')
     parser.add_argument('-c', '--config', type=str, default='memfo',
             help='use "{config}.ini" for configuration')
     parser.add_argument('-i', '--interval-sec', type=float, default=1.0,
@@ -493,17 +496,10 @@ def main():
     parser.add_argument('-z', '--zeros', action="store_true",
             help='Show lines with all zeros')
     parser.add_argument('-d', '--dump', action="store_true",
-            help='"print" the data rather than "display" it')
-    parser.add_argument('-u', '--units', choices=('KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'),
-            default='MiB', help='units of memory [dflt=MiB]')
+            help='"print" the data only once rather than "display" it')
     parser.add_argument('--DB', action="store_true",
             help='add some debugging output')
     opts = parser.parse_args()
-#   if opts.add_snap_max > 0:
-#       opts.add_snap_max = min(opts.add_snap_max, 8)
-#   if opts.cron:
-#       if not opts.label:
-#           opts.label = '=' + opts.cron.capitalize()
 
     memfo = MemFo(opts)
     memfo.loop()

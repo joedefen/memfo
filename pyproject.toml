@@ -1,0 +1,67 @@
+# HOW TO PUBLISH...
+#
+# Prep Work (ensure need modules are up-to-date):
+#   sudo pacman -Syu python-pip
+#   sudo pacman -Syu python-build
+#   sudo pacman -Syu python-twine
+#   -- antiquated way
+#      python3 -m pip install --upgrade pip
+#      python3 -m pip install --upgrade build
+#      python3 -m pip install --upgrade twine
+# 
+# PUBLIC Build and deploy (from project directory):
+#   ## BUMP the version (below in [project])
+#   rm -r dist; python3 -m build; ls dist/.
+#   python3 -m twine upload dist/*
+#     ## Enter __token__ and the saved TOKEN (in bitwarden)
+#   pipx upgrade memfo || pipx install memfo # >= python3.11
+#   --OR-- sudo python3 -m pip install memfo # <= python3.10
+#   ## VISIT  https://pypi.org/project/memfo and delete old versions
+#
+# TEST Build and test (from project directory):
+#   ## BUMP the version (below in [project])
+#   rm -r dist; python3 -m build
+#   python3 -m twine upload --repository testpypi dist/*
+#     ## Enter __token__ and the saved TOKEN (in bitwarden)
+#   sudo python3 -m pip install --index-url https://test.pypi.org/simple/ --no-deps memfo
+#   ## VISIT  https://test.pypi.org/project/memfo and delete old versions
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+version = "1.0.0"
+name = "memfo"
+authors = [
+    {name = "Joe Defen", email = "joedef@gmail.com"},
+]
+description = "Display Tool for /proc/meminfo"
+readme = "README.md"
+requires-python = ">=3.8"
+keywords = ["meminfo", "/proc/meminfo", "RAM", "memory statistics"]
+license = "MIT"
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX :: Linux"
+]
+dependencies = [
+    "requests",
+    'importlib-metadata; python_version<"3.8"',
+]
+
+[project.scripts]
+memfo = "memfo.memfo:run"
+
+[tool.hatch.build.targets.wheel]
+packages = ["memfo"]
+
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "/memfo/__pycache__",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/joedefen/memfo"
+"Bug Tracker" = "https://github.com/joedefen/memfo/issues"
