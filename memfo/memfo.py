@@ -9,12 +9,15 @@ memfo is a viewer for /proc/meminfo
 
 
 import sys
+import os
 import re
 import traceback
+import configparser
 import time
 import shutil
 import curses
 from datetime import datetime
+from types import SimpleNamespace
 try:
     from PowerWindow import Window , OptionSpinner
     # from MyUtils import human, ago_whence, timestamp_str
@@ -80,13 +83,15 @@ class MemFo:
             MemFo.max_value *= 1000
         self.zeros = opts.zeros
         self.interval = clamp(0.5, opts.interval_sec, 3600.0)
+        self.config_basename = opts.config
 
         self.units, self.divisor, self.data_width = opts.units, 0, 0
         self.delta = False # whether to show deltas
         self.win = None  # PowerWindow
         self.spin = None # Option Spinner
-        self.mode = 'normal' # or 'edit' or 'help'
+        self.page = 'normal' # or 'edit' or 'help'
         self.edit_mode = False # true in when editing
+        self.help_mode = False # true in when in help screen
         self.infos = []
         self.loops_per_info = 1
         self.loops_fro_store = 0
@@ -94,67 +99,86 @@ class MemFo:
         
         self.key_width = None
         self.data_width = None
-        self.report_lines = None # the stuff to display
+        self.report_rows = None # the stuff to display
         self._set_units()
         
-        self.freezes = []  # fields that are frozen (above the line)
-        self.thaws = []    # fields that are thawed (below the line)
-        self.hides = []    # fields that are hidden
+        self.non_zeros = set() # ever non-zero since program started
+        self.freezes = set()  # fields that are frozen (above the line)
+        self.hides = set()    # fields that are hidden
+        self.edit_cnt = 0     # number of pending edits
+        self.config = None
+        self.config_file = None
+        self.init_config()
         
     def start_curses(self, line_cnt=200):
         """ Start window mode"""
         if self.win:
             return
         self.spin = OptionSpinner()
-#       self.spin.add_key('mode', '? - help screen',
-#                         vals=['normal', 'help'], obj=self)
+        self.spin.add_key('help_mode', '? - help screen',
+                          vals=[False, True], obj=self)
         self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
-                comments='Select line and use "edit" key', obj=self)
-#       self.spin.add_key('fit_to_window', 'f - fit rows to window',
-#                         vals=[False, True], obj=self.opts)
-#       self.spin.add_key('groupby', 'g - group by',
-#                         vals=['exe', 'cmd', 'pid'], obj=self.opts)
-#       self.spin.add_key('numbers', 'n - line numbers',
-#                         vals=[False, True], obj=self.opts)
-#       self.spin.add_key('others', 'o - less category detail',
-#                         vals=[False, True], obj=self.opts)
-#       self.spin.add_key('rise_to_top', 'r - raise new/changed to top',
-#                         vals=[False, True], obj=self.opts)
-#       self.spin.add_key('sortby', 's - sort by',
-#                         vals=['mem', 'cpu', 'name'], obj=self.opts)
+                comments='"*" freezes lines; "-" hides lines', obj=self)
         self.spin.add_key('units', 'u - memory units',
-                          vals=['KB', 'mB', 'MB', 'gB', 'GB', 'human'], obj=self)
+                          vals=['KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'], obj=self)
         self.spin.add_key('delta', 'd - show deltas',
                           vals=[False, True], obj=self)
         self.spin.add_key('zeros', 'z - show all zeros lines',
                           vals=[False, True], obj=self)
-#       self.spin.add_key('cpu_avg_secs', 'a - cpu moving avg secs',
-#                         vals=[5, 10, 20, 45, 90], obj=self.opts)
-#       self.spin.add_key('search', '/ - search string',
-#                         prompt='Set search string, then Enter', obj=self.opts)
 
-        keys_we_handle =  [ord('K'), curses.KEY_ENTER, 10] + list(self.spin.keys)
+        keys_we_handle =  [ord('*'), ord('-'), ord('r'),
+                           curses.KEY_ENTER, 10] + list(self.spin.keys)
 
         self.win = Window(head_line=True, head_rows=line_cnt,
                           body_rows=line_cnt, keys=keys_we_handle)
+        
+    def init_config(self):
+        """ Get the configuration ... create if missing. """
+        self.config_file = os.path.expanduser(
+            '~/.config/memfo/{self.config_basename}.ini')
+        if not os.path.isfile(self.config_file):
+            self.edit_cnt = 1 # make it "dirty"
+            self.commit_config(freezes='MemTotal MemAvailable'.split(),
+                               hides='KernelStack Active(file)'.split())
+        self.config = configparser.RawConfigParser(allow_no_value=True)
+        self.config.optionxform = lambda option: option
+        self.config.read(self.config_file)
+        if 'Frozen Fields' in self.config.sections():
+            self.freezes = set(self.config['Frozen Fields'].keys())
+        if 'Hidden Fields' in self.config.sections():
+            self.hides = set(self.config['Hidden Fields'].keys())
+        # print(f'{self.freezes=}')
+        # print(f'{self.hides=}')
 
-    def stop_curses(self, line_cnt=200):
+    def commit_config(self, freezes=None, hides=None):
+        """ Write the config file from the current state or a given."""
+        if self.edit_cnt == 0:
+            return
+        self.edit_cnt = 0
+        freezes = list(self.freezes if freezes is None else freezes)
+        hides = list(self.hides if hides is None else hides)
+        os.makedirs(os.path.dirname(self.config_file), exist_ok=True)
+        with open(self.config_file, "w+", encoding='utf-8') as fh:
+            fh.write('[Frozen Fields]\n' + '\n'.join(freezes) + '\n')
+            fh.write('\n[Hidden Fields]\n' + '\n'.join(hides) + '\n')
+
+    def stop_curses(self):
         """ Close down window mode """
         if self.win:
             self.win.stop_curses()
 
     def _set_units(self):
         self.precision = 1
-        if self.units == 'mB':
+        if self.units == 'MB':
             self.divisor = 1000*1000
-        elif self.units == 'MB':
+        elif self.units == 'MiB':
             self.divisor = 1024*1024
-        elif self.units == 'gB':
-            self.divisor = 1000*1000*1000
         elif self.units == 'GB':
+            self.divisor = 1000*1000*1000
+        elif self.units == 'GiB':
             self.divisor = 1024*1024*1024
-        elif self.units == 'KB':
-            self.divisor = 1024 # KB (the original)
+        elif self.units == 'KiB':
+            self.divisor = 1024 # KiB (the original)
             self.precision = 0
         else: # human
             self.divisor = 0 # human
@@ -184,51 +208,47 @@ class MemFo:
 
     def render_slices(self, infos, count=5000):
         """ TBD """
-        lines = []
-        delta = 'DELTA' if self.delta else 'delta'
-        zeros = 'ZEROS' if self.zeros else 'zeros'
-        edit = 'EDIT' if self.edit_mode else 'edit'
-        line = f'u:{self.units} d:{delta} z={zeros} e={edit}'
-        lines.append(line)
-        row_cnt = 1
+        def add_row(key, text, zero=False):
+            nonlocal rows
+            rows[key] = SimpleNamespace(key=key, zero=zero, text=text)
+            if not zero:
+                self.non_zeros.add(key)
+
         rows = {}
+        delta = 'show-values' if self.delta else 'show-deltas'
+        zeros = 'hide-if-zero' if self.zeros else 'show-if-zero'
+        edit = 'exit-edit' if self.edit_mode else 'enter-edit'
+        if self.page == 'normal':
+            text = f'u:{self.units} d:{delta} z={zeros} e:{edit} ?=help'
+        else:
+            text = (f'EDIT SCREEN:  e,ENTER:{edit}'
+                    + ' *:put-on-top -:hide-line r:reset-edits  ?=help')
+        add_row(key='_lead', text=text)
 
         for ii, info in enumerate(infos):
-            ago = f'{ago_str(info["_mono"]-self.mono_start)}'
             for key in list(info.keys())[:count]:
-                if key.startswith('_'):
+                if key == '_mono':
                     ago = f'{ago_str(info["_mono"]-self.mono_start)}'
-                    line = f'{ago:>{self.data_width}}'
+                    text = f'{ago:>{self.data_width}}'
                     if ii == len(infos)-1:
                         time_str = datetime.now().strftime("%m/%d %H:%M:%S")
-                        line += f' {time_str}'
+                        text += f' {time_str}'
                 else:
-                    if rows.get(key, None) == -1:
-                        continue
-                    if ii == 0 and not self.zeros:
-                        peak = max([info[key] for info in infos])
-                        if peak == 0:
-                            rows[key] = -1
-                            continue
-
                     val = info[key]
-                    if ii < len(infos)-1:
-                        if self.delta:
-                            next_val = self.infos[ii+1][key]
-                            line = self.render(next_val-val, sign=True)
-                        else:
-                            line = self.render(val)
-                    else: # ii == len(infos)-1:
-                        line = self.render(val)
-                        line += f' {key:<{self.key_width}}'
-                if key not in rows:
-                    row = rows[key] = row_cnt
-                    row_cnt += 1
-                    lines.append(line)
+                    if ii < len(infos)-1 and self.delta:
+                        next_val = self.infos[ii+1][key]
+                        text = self.render(next_val-val, sign=True)
+                    else:
+                        text = self.render(val)
+                # now add the text of the file to the text of the line
+                if key in rows:
+                    rows[key].text += ' ' + text
+                elif key.startswith('_') or key in self.non_zeros:
+                    add_row(key, text)
                 else:
-                    row = rows[key]
-                    lines[row] += ' ' + line
-        self.report_lines = lines
+                    peak = max([info[key] for info in infos])
+                    add_row(key, text, zero=bool(peak==0))
+        self.report_rows = rows
             
     def _append_info(self, info):
         """ Add and compress memory in a pattern like:
@@ -258,24 +278,37 @@ class MemFo:
             self.infos.append(info)
             self.loops_fro_store = 0
             self.loops_per_info = 1
+
         elif self.loops_fro_store == 0:
             self.infos.append(info)
             self.loops_fro_store += 1
+            return
+        
         else:
+            if len(self.infos) >= 2:
+                floor_s = self.interval*self.loops_per_info * 0.95
+                ceiling_s = self.interval*self.loops_per_info * 1.05
+                delta_s = info['_mono'] - self.infos[-2]['_mono']
+            else:
+                floor_s = ceiling_s = delta_s = 0
+
             self.infos[-1] = info
             self.loops_fro_store += 1
-        if self.loops_fro_store >= self.loops_per_info:
-            floor_s = self.interval*self.loops_per_info * 0.95
-            delta_s = info['_mono'] - self.infos[-2]['_mono']
-            if delta_s < floor_s:
-                # push out closing this bucket
-                self.loops_fro_store -= 1
-            else:
-                self.loops_fro_store = 0
-                if len(self.infos) > MAX_INFOS:
-                    self.infos = [self.infos[i]
-                               for i in range(0, MAX_INFOS+1, 2)]
-                    self.loops_per_info *= 2
+            if delta_s > ceiling_s:
+                # been here too long even though the count does
+                # not indicate that ... force bucket close
+                self.loops_fro_store = self.loops_per_info
+
+            if self.loops_fro_store >= self.loops_per_info:
+                if delta_s < floor_s:
+                    # time says we should not close the bucket
+                    self.loops_fro_store -= 1
+                else:
+                    self.loops_fro_store = 0
+                    if len(self.infos) > MAX_INFOS:
+                        self.infos = [self.infos[i]
+                                   for i in range(0, MAX_INFOS+1, 2)]
+                        self.loops_per_info *= 2
 
         # print([ago_str(info['_mono']-self.mono_zero) for info in self.infos])
 
@@ -303,6 +336,8 @@ class MemFo:
         self._append_info(info)
         self.term_width, _ = shutil.get_terminal_size()
         cols_width = self.term_width - self.key_width
+        if self.page == 'edit':
+            cols_width -= 4  # for ' ** '
         col_cnt = max(1, cols_width//(1+self.data_width))
         
         if len(self.infos) <= col_cnt:
@@ -314,11 +349,65 @@ class MemFo:
                 slices.append(self.infos[position])
             slices.append(self.infos[-1])
         self.render_slices(slices)
+
+    def render_help_screen(self):
+        """Populate help screen"""
+        self.win.clear()
+        self.win.add_header(
+                "-- HELP SCREEN ['?' or ENTER closes Help; Ctrl-C exits ] --",
+                 attr=curses.A_BOLD)
+        self.spin.show_help_nav_keys(self.win)
+        self.spin.show_help_body(self.win)
+        self.win.render()
+
+        
+    def render_normal_report(self):
+        """ TBD"""
+        self.win.clear()
+        for row in self.report_rows.values():
+            if row.key.startswith('_'):
+                self.win.add_header(row.text, attr=curses.A_BOLD)
+            elif row.key in self.freezes:
+                self.win.add_header(f'{row.text} {row.key}')
+            elif not self.zeros and row.zero:
+                continue
+            elif row.key not in self.hides:
+                self.win.add_body(f'{row.text} {row.key}')
+        self.win.render()
+
+    def render_edit_report(self):
+        """ TBD"""
+        def text(row, flag):
+            return f'{row.text} {flag} {row.key}'
+
+        self.win.clear()
+        for row in self.report_rows.values():
+            if row.key.startswith('_'):
+                self.win.add_header(row.text)
+            elif row.key in self.freezes:
+                self.win.add_body(text(row, '***'))
+            elif row.key in self.hides:
+                self.win.add_body(text(row, '---'))
+            else:
+                self.win.add_body(text(row, '   '))
+        self.win.render()
         
     def do_window(self):
         """ one loop of window rendering """
+        def set_page():
+            if self.help_mode:
+                self.page = 'help'
+                self.win.set_pick_mode(False)
+                self.commit_config()
+            elif self.edit_mode:
+                self.page = 'edit'
+                self.win.set_pick_mode(True)
+            else:
+                self.page = 'normal'
+                self.win.set_pick_mode(False)
+                self.commit_config()
+            
         def do_key(key):
-#           regroup = False
 #           # ENSURE keys are in 'keys_we_handle'
 #           if key in (ord('/'), ):
 #               pass
@@ -326,45 +415,52 @@ class MemFo:
                 self.spin.do_key(key, self.win)
                 if key in (ord('u'), ):
                     self._set_units()
-#               elif key in (ord('?'), ):
-#                   self.window.set_pick_mode(False if self.mode == 'help'
-#                                          else self.opts.kill_mode)
-                elif key in (ord('e'), ):
-                    if self.mode in ('normal', 'edit'):
-                        self.win.set_pick_mode(self.edit_mode)
+                elif key in (ord('?'), ):
+                    set_page()
 
-#           elif key in (curses.KEY_ENTER, 10):
-#               if self.mode == 'help':
-#                   self.mode = 'normal'
-#               elif self.opts.kill_mode:
-#                   win = self.window
-#                   group = self.groups_by_line.get(win.pick_pos, None)
-#                   if group:
-#                       pids = [x.pid for x in group.prcset]
-#                       answer = win.answer(seed='',
-#                           prompt=f'Type "y" to kill: {group.summary["info"]} {pids}')
-#                       if answer.lower().startswith('y'):
-#                           killer = KillThem(pids)
-#                           ok, message = killer.do_kill()
-#                           win.alert(title='OK' if ok else 'FAIL', message=message)
-#                   self.opts.kill_mode = False
-#                   self.window.set_pick_mode(self.opts.kill_mode)
-#           return regroup
+                elif key in (ord('e'), ):
+                    set_page()
+
+            elif key in (ord('*'), ord('-'), ord('r') ):
+                if self.page in ('edit', ):
+                    row = list(self.report_rows.values())[self.win.pick_pos+2]
+                    param = row.key
+                    if key == ord('*'):
+                        if param in self.freezes:
+                            self.freezes.discard(param)
+                        else:
+                            self.freezes.add(param)
+                        self.hides.discard(param)
+                    elif key == ord('-'):
+                        if param in self.hides:
+                            self.hides.discard(param)
+                        else:
+                            self.hides.add(param)
+                        self.freezes.discard(param)
+                    elif key == ord('r'):
+                        self.hides, self.freezes = set(), set()
+                    self.edit_cnt += 1
+                    if key in (ord('*'), ord('-'), ):
+                        self.win.last_pick_pos = self.win.pick_pos
+                        self.win.pick_pos = min(
+                            self.win.pick_pos+1, self.win.body.row_cnt-1)
+
+            elif key in (curses.KEY_ENTER, 10):
+                if self.help_mode:
+                    self.help_mode = False
+                elif self.edit_mode:
+                    self.edit_mode = False
+                set_page()
 
         self.start_curses()
 
-        if self.mode == 'help':
-            pass
-        elif self.mode == 'edit':
-            pass
+        if self.page == 'help':
+            self.render_help_screen()
+        elif self.page == 'edit':
+            self.render_edit_report()
         else: # normal mode
-            self.win.clear()
-            self.win.add_header(self.report_lines[0])
-            self.win.add_header(self.report_lines[1])
-            for line in self.report_lines[2:]:
-                self.win.add_body(line)
-            self.win.render()
-            do_key(self.win.prompt(seconds=self.interval))
+            self.render_normal_report()
+        do_key(self.win.prompt(seconds=self.interval))
 
     def loop(self):
         """ The main loop for the program """
@@ -372,7 +468,8 @@ class MemFo:
             self.update_report_data()
 
             if self.dump:
-                print('\n' + '\n'.join(self.report_lines) + '\n')
+                texts = [row.text for row in self.report_rows]
+                print('\n' + '\n'.join(texts) + '\n')
                 if self.DB:
                     print([ago_str(info['_mono']-self.mono_start) for info in slices])
                 time.sleep(self.interval)
@@ -387,10 +484,8 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser()
-#   parser.add_argument('-s', '--add-snap-max', type=int, default=0,
-#           help='add snapshots limited to value per subvol [1<=val<=8]')
-#   parser.add_argument('-L', '--label', type=str,
-#           help='add given label to -s snapshots')
+    parser.add_argument('-c', '--config', type=str, default='memfo',
+            help='use "{config}.ini" for configuration')
     parser.add_argument('-i', '--interval-sec', type=float, default=1.0,
             help='loop interval in seconds [dflt=1.0] ')
     parser.add_argument('--vmalloc-total', action="store_true",
@@ -399,12 +494,8 @@ def main():
             help='Show lines with all zeros')
     parser.add_argument('-d', '--dump', action="store_true",
             help='"print" the data rather than "display" it')
-#   parser.add_argument('--cron', type=str,
-#           choices=('hourly', 'daily', 'weekly', 'monthly'),
-#           help='install a periodic snapshot anacron job')
-    parser.add_argument('-u', '--units', choices=('KB', 'mB', 'MB', 'gB', 'GB', 'human'),
-            default='MB', help='units of memory [dflt=MB]')
-    
+    parser.add_argument('-u', '--units', choices=('KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'),
+            default='MiB', help='units of memory [dflt=MiB]')
     parser.add_argument('--DB', action="store_true",
             help='add some debugging output')
     opts = parser.parse_args()
