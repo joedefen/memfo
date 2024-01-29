@@ -236,7 +236,7 @@ class MemFo:
                 else:
                     val = info[key]
                     if ii < len(infos)-1 and self.delta:
-                        next_val = self.infos[ii+1][key]
+                        next_val = infos[ii+1][key]
                         text = self.render(next_val-val, sign=True)
                     else:
                         text = self.render(val)
