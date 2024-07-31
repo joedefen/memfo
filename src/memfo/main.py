@@ -18,12 +18,7 @@ import shutil
 import curses
 from datetime import datetime
 from types import SimpleNamespace
-try:
-    from PowerWindow import Window , OptionSpinner
-    # from MyUtils import human, ago_whence, timestamp_str
-except Exception:
-    from memfo.PowerWindow import Window , OptionSpinner
-    # from my_snaps.MyUtils import human, ago_whence, timestamp_str
+from memfo.PowerWindow import Window , OptionSpinner
 
 
 ##############################################################################
