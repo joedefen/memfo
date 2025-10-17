@@ -18,7 +18,7 @@ import shutil
 import curses
 from datetime import datetime
 from types import SimpleNamespace
-from memfo.PowerWindow import Window , OptionSpinner
+from console_window import ConsoleWindow , OptionSpinner
 
 
 ##############################################################################
@@ -82,7 +82,7 @@ class MemFo:
 
         self.units, self.divisor, self.data_width = opts.units, 0, 0
         self.delta = False # whether to show deltas
-        self.win = None  # PowerWindow
+        self.win = None  # ConsoleWindow
         self.spin = None # Option Spinner
         self.page = 'normal' # or 'edit' or 'help'
         self.edit_mode = False # true in when editing
@@ -124,7 +124,7 @@ class MemFo:
         keys_we_handle =  [ord('*'), ord('-'), ord('r'),
                            curses.KEY_ENTER, 10] + list(self.spin.keys)
 
-        self.win = Window(head_line=True, head_rows=line_cnt,
+        self.win = ConsoleWindow(head_line=True, head_rows=line_cnt,
                           body_rows=line_cnt, keys=keys_we_handle)
         
     def init_config(self):
