@@ -2,10 +2,19 @@
 # -*- coding: utf-8 -*-
 """
 memfo is a viewer for /proc/meminfo
+TODO:
+- add [i]tvl=Var spiner values: Var, 30s, 1m, 5m, 15m, 1h, 4h
+    - shows as many, say, 5m intervals as can fit on the screen (showing current last or rightmost)
+    - if 5m not available, then it goes up to next option (silently)
+- add dump-to-csv key and it put current samples into a file.... maybe takes over header line for 10s to show feedback
+- ensure collection is being done during help screen and edit screen (not sure)
+- update README considerably
 """
 # pylint: disable=invalid-name,global-statement
 # pylint: disable=import-outside-toplevel,consider-using-with
 # pylint: disable=broad-exception-caught,too-few-public-methods
+# pylint: disable=too-many-branches,too-many-statements,consider-using-generator
+# pylint: disable=too-many-instance-attributes,too-many-locals
 
 
 import sys
@@ -88,15 +97,17 @@ class MemFo:
         self.edit_mode = False # true in when editing
         self.help_mode = False # true in when in help screen
         self.infos = []
+        self.slices = []  # combined infos
+        self.comp_idx = 0  # tracks factor to use when squeezing memory
         self.loops_per_info = 1
         self.loops_fro_store = 0
         self.term_width = 0 # how wide is the terminal
-        
+
         self.key_width = None
         self.data_width = None
         self.report_rows = None # the stuff to display
         self._set_units()
-        
+
         self.non_zeros = set() # ever non-zero since program started
         self.freezes = set()  # fields that are frozen (above the line)
         self.hides = set()    # fields that are hidden
@@ -104,7 +115,7 @@ class MemFo:
         self.config = None
         self.config_file = None
         self.init_config()
-        
+
     def start_curses(self, line_cnt=200):
         """ Start window mode"""
         if self.win:
@@ -121,12 +132,12 @@ class MemFo:
         self.spin.add_key('zeros', 'z - show all zeros lines',
                           vals=[False, True], obj=self)
 
-        keys_we_handle =  [ord('*'), ord('-'), ord('r'),
+        keys_we_handle =  [ord('*'), ord('-'), ord('r'), ord('R'),
                            curses.KEY_ENTER, 10] + list(self.spin.keys)
 
         self.win = ConsoleWindow(head_line=True, head_rows=line_cnt,
                           body_rows=line_cnt, keys=keys_we_handle)
-        
+
     def init_config(self):
         """ Get the configuration ... create if missing. """
         self.config_file = os.path.expanduser(
@@ -182,7 +193,7 @@ class MemFo:
         self.data_width = len(self.render(-self.max_value))
         # if self.units == 'human':
          #    self.data_width = 1+min(self.data_width, 7)
-    
+
     def render(self, value, sign=''):
         """ Render a value into a string per the current options
             Given no value, render the max supported.
@@ -201,7 +212,7 @@ class MemFo:
                 rv = f'{int(value):{sign}{self.data_width},d}'
         return rv
 
-    def render_slices(self, infos, count=5000):
+    def render_slices(self, count=5000):
         """ TBD """
         def add_row(key, text, zero=False):
             nonlocal rows
@@ -210,28 +221,28 @@ class MemFo:
                 self.non_zeros.add(key)
 
         rows = {}
-        delta = 'show-values' if self.delta else 'show-deltas'
-        zeros = 'hide-if-zero' if self.zeros else 'show-if-zero'
+        delta = 'ON' if self.delta else 'off'
+        zeros = 'ON' if self.zeros else 'off'
         edit = 'exit-edit' if self.edit_mode else 'enter-edit'
         if self.page == 'normal':
-            text = f'u:{self.units} d:{delta} z={zeros} e:{edit} ?=help'
+            text = f'[u]nits:{self.units} [d]eltas:{delta} zeros={zeros} [e]dit ?=help'
         else:
-            text = (f'EDIT SCREEN:  e,ENTER:{edit}'
-                    + ' *:put-on-top -:hide-line r:reset-edits  ?=help')
+            text = (f'EDIT SCREEN:  e,ENTER:return'
+                    + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
         add_row(key='_lead', text=text)
 
-        for ii, info in enumerate(infos):
+        for ii, info in enumerate(self.slices):
             for key in list(info.keys())[:count]:
                 if key == '_mono':
                     ago = f'{ago_str(info["_mono"]-self.mono_start)}'
                     text = f'{ago:>{self.data_width}}'
-                    if ii == len(infos)-1:
+                    if ii == len(self.slices)-1:
                         time_str = datetime.now().strftime("%m/%d %H:%M:%S")
                         text += f' {time_str}'
                 else:
                     val = info[key]
-                    if ii < len(infos)-1 and self.delta:
-                        next_val = infos[ii+1][key]
+                    if ii < len(self.slices)-1 and self.delta:
+                        next_val = self.slices[ii+1][key]
                         text = self.render(next_val-val, sign=True)
                     else:
                         text = self.render(val)
@@ -241,71 +252,71 @@ class MemFo:
                 elif key.startswith('_') or key in self.non_zeros:
                     add_row(key, text)
                 else:
-                    peak = max([info[key] for info in infos])
+                    peak = max([info[key] for info in self.slices])
                     add_row(key, text, zero=bool(peak==0))
         self.report_rows = rows
-            
-    def _append_info(self, info):
-        """ Add and compress memory in a pattern like:
-        ['0s']
-        ['0s', '1s']
-        ['0s', '1s', '2s']
-        ['0s', '1s', '2s', '3s']
-        ['0s', '1s', '2s', '3s', '4s']
-        ['0s', '1s', '2s', '3s', '4s', '5s']
-        ['0s', '1s', '2s', '3s', '4s', '5s', '6s']
-        ['0s', '1s', '2s', '3s', '4s', '5s', '6s', '7s']
-        ['0s', '2s', '4s', '6s', '8s']
-        ['0s', '2s', '4s', '6s', '8s', '9s']
-        ['0s', '2s', '4s', '6s', '8s', '10s']
-        ['0s', '2s', '4s', '6s', '8s', '10s', '11s']
-        ['0s', '2s', '4s', '6s', '8s', '10s', '12s']
-        ['0s', '2s', '4s', '6s', '8s', '10s', '12s', '13s']
-        ['0s', '2s', '4s', '6s', '8s', '10s', '12s', '14s']
-        ['0s', '2s', '4s', '6s', '8s', '10s', '12s', '14s', '15s']
-        ['0s', '4s', '8s', '12s', '16s']
 
-        
+    def _append_info(self, info):
+        """ Add and compress memory with fixed time retention and unified
+            physical/logical compression for uniform sample spacing.
         """
-        MAX_INFOS = 8
-        MAX_INFOS = 128
+        # Configuration Constants
+        MAX_INFOS = 600  # Target number of intervals (divisible by 2, 3, 5)
+        # Multipliers for smoother progression (e.g., *2, *5, *3 gives 1, 2, 10, 30...)
+        COMPRESSION_MULTIPLIERS = [2, 5, 3, 2, 5, 2, 5]
+        RETENTION_SEC = 24 * 60 * 60  # 24 hours of retention
+
+        # --- 1. Initial Storage / Overwrite ---
         if not self.infos:
             self.infos.append(info)
             self.loops_fro_store = 0
             self.loops_per_info = 1
-
-        elif self.loops_fro_store == 0:
-            self.infos.append(info)
-            self.loops_fro_store += 1
+            self.comp_idx = 0
             return
-        
-        else:
-            if len(self.infos) >= 2:
-                floor_s = self.interval*self.loops_per_info * 0.95
-                ceiling_s = self.interval*self.loops_per_info * 1.05
-                delta_s = info['_mono'] - self.infos[-2]['_mono']
-            else:
-                floor_s = ceiling_s = delta_s = 0
 
+        if self.loops_fro_store < self.loops_per_info:
+            # Overwrite the latest snapshot to keep the most recent data fresh
             self.infos[-1] = info
             self.loops_fro_store += 1
-            if delta_s > ceiling_s:
-                # been here too long even though the count does
-                # not indicate that ... force bucket close
-                self.loops_fro_store = self.loops_per_info
+            return
 
-            if self.loops_fro_store >= self.loops_per_info:
-                if delta_s < floor_s:
-                    # time says we should not close the bucket
-                    self.loops_fro_store -= 1
-                else:
-                    self.loops_fro_store = 0
-                    if len(self.infos) > MAX_INFOS:
-                        self.infos = [self.infos[i]
-                                   for i in range(0, MAX_INFOS+1, 2)]
-                        self.loops_per_info *= 2
+        # --- 2. Store New Info (Bucket Close) ---
+        # Re-incorporated Fuzzy Close Logic:
+        # Check if enough time has actually passed to warrant closing the bucket.
+        if len(self.infos) >= 2:
+            # Floor is set to 95% of the expected time for this bucket interval
+            floor_s = self.interval * self.loops_per_info * 0.95
+            delta_s = info['_mono'] - self.infos[-2]['_mono']
 
-        # print([ago_str(info['_mono']-self.mono_zero) for info in self.infos])
+            if delta_s < floor_s:
+                # Time says we should not close the bucket yet (too short)
+                self.loops_fro_store -= 1
+                self.infos[-1] = info # Still update the last entry
+                return
+
+        # If enough time has passed (or it's been here too long), store the new, permanent snapshot
+        self.infos.append(info)
+        self.loops_fro_store = 0
+
+        # --- 3. History Pruning (Fixed Time Retention) ---
+        # Remove snapshots older than the retention limit
+        cutoff_time = info['_mono'] - RETENTION_SEC
+        while self.infos and self.infos[0]['_mono'] < cutoff_time:
+            self.infos.pop(0)
+
+        # --- 4. Unified Adaptive Compression (Capacity and Spacing) ---
+        # Compress if we are nearing the target capacity
+        if len(self.infos) > MAX_INFOS:
+
+            # Determine the compression factor for this step
+            factor = COMPRESSION_MULTIPLIERS[self.comp_idx % len(COMPRESSION_MULTIPLIERS)]
+
+            # A. Physical Compression: Drops 1/factor of entries, maintaining uniform spacing.
+            self.infos = [self.infos[i] for i in range(0, len(self.infos), factor)]
+
+            # B. Logical Coarsening: Sets the new, wider time interval for future samples.
+            self.loops_per_info *= factor
+            self.comp_idx += 1
 
     def _read_info(self):
         self.fh.seek(0)
@@ -324,7 +335,7 @@ class MemFo:
         # if self.DB:
             # self.dump_infos([info])
         return info
-    
+
     def update_report_data(self):
         """ Get new data and report on it. """
         info = self._read_info()
@@ -334,16 +345,16 @@ class MemFo:
         if self.page == 'edit':
             cols_width -= 4  # for ' ** '
         col_cnt = max(1, cols_width//(1+self.data_width))
-        
+
         if len(self.infos) <= col_cnt:
-            slices = self.infos
+            self.slices = self.infos
         else:
-            slices = []
+            self.slices = []
             for cnt in range(col_cnt-1):
                 position = int(round(cnt*(len(self.infos)-1)/(col_cnt-1)))
-                slices.append(self.infos[position])
-            slices.append(self.infos[-1])
-        self.render_slices(slices)
+                self.slices.append(self.infos[position])
+            self.slices.append(self.infos[-1])
+        self.render_slices()
 
     def render_help_screen(self):
         """Populate help screen"""
@@ -355,7 +366,7 @@ class MemFo:
         self.spin.show_help_body(self.win)
         self.win.render()
 
-        
+
     def render_normal_report(self):
         """ TBD"""
         self.win.clear()
@@ -386,7 +397,7 @@ class MemFo:
             else:
                 self.win.add_body(text(row, '   '))
         self.win.render()
-        
+
     def do_window(self):
         """ one loop of window rendering """
         def set_page():
@@ -401,7 +412,7 @@ class MemFo:
                 self.page = 'normal'
                 self.win.set_pick_mode(False)
                 self.commit_config()
-            
+
         def do_key(key):
 #           # ENSURE keys are in 'keys_we_handle'
 #           if key in (ord('/'), ):
@@ -416,26 +427,23 @@ class MemFo:
                 elif key in (ord('e'), ):
                     set_page()
 
-            elif key in (ord('*'), ord('-'), ord('r') ):
+            elif key in (ord('*'), ord('-'), ord('r'), ord('R') ):
                 if self.page in ('edit', ):
                     row = list(self.report_rows.values())[self.win.pick_pos+2]
                     param = row.key
                     if key == ord('*'):
-                        if param in self.freezes:
-                            self.freezes.discard(param)
-                        else:
-                            self.freezes.add(param)
                         self.hides.discard(param)
+                        self.freezes.add(param)
                     elif key == ord('-'):
-                        if param in self.hides:
-                            self.hides.discard(param)
-                        else:
-                            self.hides.add(param)
                         self.freezes.discard(param)
+                        self.hides.add(param)
                     elif key == ord('r'):
+                        self.hides.discard(param)
+                        self.freezes.discard(param)
+                    elif key == ord('R'):
                         self.hides, self.freezes = set(), set()
                     self.edit_cnt += 1
-                    if key in (ord('*'), ord('-'), ):
+                    if key in (ord('*'), ord('-'), ord('r') ):
                         self.win.last_pick_pos = self.win.pick_pos
                         self.win.pick_pos = min(
                             self.win.pick_pos+1, self.win.body.row_cnt-1)
@@ -467,11 +475,10 @@ class MemFo:
                          if not row.key.startswith('_')]
                 print('\n' + '\n'.join(texts) + '\n')
                 if self.DB:
-                    print([ago_str(info['_mono']-self.mono_start) for info in slices])
+                    print([ago_str(info['_mono']-self.mono_start) for info in self.slices])
                 time.sleep(self.interval)
                 break
-            else:
-                self.do_window()
+            self.do_window()
 
 memfo = None
 def main():
