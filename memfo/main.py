@@ -86,7 +86,7 @@ class MemFo:
         if self.vmalloc_total:
             MemFo.max_value *= 1000
         self.zeros = opts.zeros
-        self.interval = clamp(0.5, opts.interval_sec, 3600.0)
+        self.sample_secs = 1.0
         self.config_basename = opts.config
 
         self.units, self.divisor, self.data_width = opts.units, 0, 0
@@ -96,12 +96,15 @@ class MemFo:
         self.page = 'normal' # or 'edit' or 'help'
         self.edit_mode = False # true in when editing
         self.help_mode = False # true in when in help screen
+        self.interval = 'Var'  # column interval
         self.infos = []
         self.slices = []  # combined infos
         self.comp_idx = 0  # tracks factor to use when squeezing memory
         self.loops_per_info = 1
         self.loops_fro_store = 0
         self.term_width = 0 # how wide is the terminal
+        self.intervals = {'Var': 0, '30s': 30, '1m': 60, '5m': 300,
+                          '15m': 900, '1hr': 3600}
 
         self.key_width = None
         self.data_width = None
@@ -223,11 +226,10 @@ class MemFo:
         rows = {}
         delta = 'ON' if self.delta else 'off'
         zeros = 'ON' if self.zeros else 'off'
-        edit = 'exit-edit' if self.edit_mode else 'enter-edit'
         if self.page == 'normal':
             text = f'[u]nits:{self.units} [d]eltas:{delta} zeros={zeros} [e]dit ?=help'
         else:
-            text = (f'EDIT SCREEN:  e,ENTER:return'
+            text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
         add_row(key='_lead', text=text)
 
@@ -262,8 +264,8 @@ class MemFo:
         """
         # Configuration Constants
         MAX_INFOS = 600  # Target number of intervals (divisible by 2, 3, 5)
-        # Multipliers for smoother progression (e.g., *2, *5, *3 gives 1, 2, 10, 30...)
-        COMPRESSION_MULTIPLIERS = [2, 5, 3, 2, 5, 2, 5]
+        COMPRESSION_MULTIPLIERS = [5, 3, 2, 2, 5, 3, 2, 2, 4, 3, 2, 2, 2, 2]
+          # 5s, 15s, 30s, 1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d, 2d, 4d, 8d
         RETENTION_SEC = 24 * 60 * 60  # 24 hours of retention
 
         # --- 1. Initial Storage / Overwrite ---
@@ -285,7 +287,7 @@ class MemFo:
         # Check if enough time has actually passed to warrant closing the bucket.
         if len(self.infos) >= 2:
             # Floor is set to 95% of the expected time for this bucket interval
-            floor_s = self.interval * self.loops_per_info * 0.95
+            floor_s = self.sample_secs * self.loops_per_info * 0.95
             delta_s = info['_mono'] - self.infos[-2]['_mono']
 
             if delta_s < floor_s:
@@ -301,7 +303,7 @@ class MemFo:
         # --- 3. History Pruning (Fixed Time Retention) ---
         # Remove snapshots older than the retention limit
         cutoff_time = info['_mono'] - RETENTION_SEC
-        while self.infos and self.infos[0]['_mono'] < cutoff_time:
+        while len(self.infos) > MAX_INFOS and self.infos[0]['_mono'] < cutoff_time:
             self.infos.pop(0)
 
         # --- 4. Unified Adaptive Compression (Capacity and Spacing) ---
@@ -335,6 +337,96 @@ class MemFo:
         # if self.DB:
             # self.dump_infos([info])
         return info
+
+    def new_update_report_data(self):
+        """ Get new data and report on it, sampling history based on screen width
+            or a fixed time interval.
+        """
+        info = self._read_info()
+        self._append_info(info)
+
+        self.term_width, _ = shutil.get_terminal_size()
+        cols_width = self.term_width - self.key_width
+
+        if self.page == 'edit':
+            cols_width -= 4  # for ' ** '
+
+        # Maximum number of columns that can physically fit on the screen
+        max_col_cnt = max(1, cols_width // (1 + self.data_width))
+
+        # --- Fixed Interval Calculation ---
+        # Assume self.interval is the user's selected mode ("Var", "30s", "1m", etc.)
+        # Assume self.intervals is a dictionary mapping these strings to seconds.
+        # Placeholder for self.intervals (you'll set this up later)
+
+        interval_sec = self.intervals.get(self.interval, 0) # Get seconds, 0 for "Var"
+
+        slices = []
+
+        if self.interval == 'Var' or interval_sec == 0:
+            # --- Variable Interval Display (Original Adaptive Logic) ---
+            # Show as many evenly spaced samples as fit on the screen, spanning all history.
+
+            total_history_count = len(self.infos)
+            col_cnt = min(max_col_cnt, total_history_count)
+
+            if total_history_count <= col_cnt:
+                slices = self.infos
+            else:
+                # Samples are evenly distributed across the entire history
+                for cnt in range(col_cnt - 1):
+                    # Position is rounded to find the index for even distribution
+                    position = int(round(cnt * (total_history_count - 1) / (col_cnt - 1)))
+                    slices.append(self.infos[position])
+                slices.append(self.infos[-1]) # Always include the latest snapshot
+
+        else:
+            # --- Fixed Interval Display (New Time-Based Logic) ---
+
+            current_mono_time = self.infos[-1]['_mono']
+            oldest_available_time = self.infos[0]['_mono'] # The time of the absolute oldest snapshot
+
+            # The column indices represent time deltas: 0s, 5m, 10m, 15m, ...
+            # We iterate backward in time, from the largest delta down to the current (i=0).
+            for i in range(max_col_cnt - 1, -1, -1):
+
+                target_delta = i * interval_sec
+                target_time = current_mono_time - target_delta
+
+                # Break if the required target time is OLDER than the oldest data we have.
+                # This prevents generating empty columns for non-existent history.
+                if target_time < oldest_available_time:
+                    continue # Skip this target and try the next one (less old)
+
+                # Find the best match in self.infos for the target_time (Fuzzy Match)
+                best_match = None
+                min_time_diff = float('inf')
+
+                # Iterate backward through history for the closest match (fastest)
+                # We start checking from the newest data (self.infos[-1])
+                for info in reversed(self.infos):
+                    time_diff = abs(info['_mono'] - target_time)
+
+                    if time_diff < min_time_diff:
+                        best_match = info
+                        min_time_diff = time_diff
+                    elif info['_mono'] < target_time:
+                        # Optimization: If the current 'info' is older than the target,
+                        # and the time difference is now increasing, we can stop early
+                        # as we've already found the best match near 'target_time'.
+                        break
+
+                if best_match and (not slices or slices[0] is not best_match):
+                    # Prepend the slice to ensure it's in the correct time order (oldest -> newest)
+                    slices.insert(0, best_match)
+
+        # Ensure the current/latest snapshot is always the last item (rightmost column)
+        if not slices or slices[-1] is not self.infos[-1]:
+            slices.append(self.infos[-1])
+
+        # Render the final slices
+        self.slices = slices # Store the slices for debug/dump purposes
+        self.render_slices(slices)
 
     def update_report_data(self):
         """ Get new data and report on it. """
@@ -463,7 +555,7 @@ class MemFo:
             self.render_edit_report()
         else: # normal mode
             self.render_normal_report()
-        do_key(self.win.prompt(seconds=self.interval))
+        do_key(self.win.prompt(seconds=self.sample_secs))
 
     def loop(self):
         """ The main loop for the program """
@@ -476,7 +568,7 @@ class MemFo:
                 print('\n' + '\n'.join(texts) + '\n')
                 if self.DB:
                     print([ago_str(info['_mono']-self.mono_start) for info in self.slices])
-                time.sleep(self.interval)
+                time.sleep(self.sample_secs)
                 break
             self.do_window()
 
