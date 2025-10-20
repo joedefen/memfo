@@ -6,7 +6,8 @@ TODO:
 - add [i]tvl=Var spiner values: Var, 30s, 1m, 5m, 15m, 1h, 4h
     - shows as many, say, 5m intervals as can fit on the screen (showing current last or rightmost)
     - if 5m not available, then it goes up to next option (silently)
-- add dump-to-csv key and it put current samples into a file.... maybe takes over header line for 10s to show feedback
+- add dump-to-csv key and it put current samples into a file.... maybe takes
+   over header line for 10s to show feedback
 - ensure collection is being done during help screen and edit screen (not sure)
 - update README considerably
 """
@@ -14,7 +15,8 @@ TODO:
 # pylint: disable=import-outside-toplevel,consider-using-with
 # pylint: disable=broad-exception-caught,too-few-public-methods
 # pylint: disable=too-many-branches,too-many-statements,consider-using-generator
-# pylint: disable=too-many-instance-attributes,too-many-locals
+# pylint: disable=too-many-instance-attributes,too-many-locals,line-too-long
+# pylint: disable=too-many-lines
 
 
 import sys
@@ -23,8 +25,9 @@ import re
 import traceback
 import configparser
 import time
-import shutil
 import curses
+import shutil
+import math
 from datetime import datetime
 from types import SimpleNamespace
 from console_window import ConsoleWindow , OptionSpinner
@@ -96,15 +99,21 @@ class MemFo:
         self.page = 'normal' # or 'edit' or 'help'
         self.edit_mode = False # true in when editing
         self.help_mode = False # true in when in help screen
-        self.interval = 'Var'  # column interval
+        self.report_interval = 'Var'  # column interval
         self.infos = []
         self.slices = []  # combined infos
+        self.last_bucket_end_time = None
+        self.historical_slices = None
+        self.prev_report_interval = None
+        self.report_anchor_mono_time = None
+        self.last_processed_bucket_end = None
         self.comp_idx = 0  # tracks factor to use when squeezing memory
         self.loops_per_info = 1
         self.loops_fro_store = 0
         self.term_width = 0 # how wide is the terminal
-        self.intervals = {'Var': 0, '30s': 30, '1m': 60, '5m': 300,
-                          '15m': 900, '1hr': 3600}
+        self.report_intervals = {'Var': 0, '5s': 5, '15s': 15,
+                                '30s': 30, '1m': 60, '5m': 300,
+                                '15m': 900, '1hr': 3600}
 
         self.key_width = None
         self.data_width = None
@@ -124,15 +133,17 @@ class MemFo:
         if self.win:
             return
         self.spin = OptionSpinner()
-        self.spin.add_key('help_mode', '? - help screen',
-                          vals=[False, True], obj=self)
-        self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
-                comments='"*" freezes lines; "-" hides lines', obj=self)
         self.spin.add_key('units', 'u - memory units',
                           vals=['KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'], obj=self)
+        self.spin.add_key('report_interval', 'i - report interval',
+                          vals=list(self.report_intervals.keys()), obj=self)
         self.spin.add_key('delta', 'd - show deltas',
                           vals=[False, True], obj=self)
         self.spin.add_key('zeros', 'z - show all zeros lines',
+                          vals=[False, True], obj=self)
+        self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
+                comments='"*" freezes lines; "-" hides lines', obj=self)
+        self.spin.add_key('help_mode', '? - help screen',
                           vals=[False, True], obj=self)
 
         keys_we_handle =  [ord('*'), ord('-'), ord('r'), ord('R'),
@@ -215,7 +226,7 @@ class MemFo:
                 rv = f'{int(value):{sign}{self.data_width},d}'
         return rv
 
-    def render_slices(self, count=5000):
+    def render_slices(self):
         """ TBD """
         def add_row(key, text, zero=False):
             nonlocal rows
@@ -223,11 +234,12 @@ class MemFo:
             if not zero:
                 self.non_zeros.add(key)
 
+        count = 5000
         rows = {}
         delta = 'ON' if self.delta else 'off'
         zeros = 'ON' if self.zeros else 'off'
         if self.page == 'normal':
-            text = f'[u]nits:{self.units} [d]eltas:{delta} zeros={zeros} [e]dit ?=help'
+            text = f'[u]nits:{self.units} [i]tvl={self.report_interval} [d]eltas:{delta} zeros={zeros} [e]dit ?=help'
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
@@ -276,10 +288,10 @@ class MemFo:
             self.comp_idx = 0
             return
 
+        self.loops_fro_store += 1
         if self.loops_fro_store < self.loops_per_info:
             # Overwrite the latest snapshot to keep the most recent data fresh
             self.infos[-1] = info
-            self.loops_fro_store += 1
             return
 
         # --- 2. Store New Info (Bucket Close) ---
@@ -338,114 +350,141 @@ class MemFo:
             # self.dump_infos([info])
         return info
 
-    def new_update_report_data(self):
-        """ Get new data and report on it, sampling history based on screen width
-            or a fixed time interval.
+    def update_report_data(self):
+        """ Get new data and report on it, sampling history based on sample count 
+            (fixed interval) or adaptive logic (Var).
         """
+        
+        # ----------------------------------------------------------------------
+        # 0. INITIALIZATION AND SETUP
+        # ----------------------------------------------------------------------
+        
+        # Initialize stable state variables (must persist across loops)
+        if not hasattr(self, 'last_complete_sample_index'):
+            self.last_complete_sample_index = 0
+        if not hasattr(self, 'prev_report_interval'):
+            self.prev_report_interval = self.report_interval 
+        if not hasattr(self, 'historical_slices'):
+            self.historical_slices = []
+
+        # 1. READ and APPEND New Data
         info = self._read_info()
         self._append_info(info)
 
+        # 2. CALCULATE Screen Constraints
         self.term_width, _ = shutil.get_terminal_size()
+        self.key_width = getattr(self, 'key_width', 0)
+        self.data_width = getattr(self, 'data_width', 0)
         cols_width = self.term_width - self.key_width
 
         if self.page == 'edit':
-            cols_width -= 4  # for ' ** '
+            cols_width -= 4 
 
         # Maximum number of columns that can physically fit on the screen
         max_col_cnt = max(1, cols_width // (1 + self.data_width))
 
-        # --- Fixed Interval Calculation ---
-        # Assume self.interval is the user's selected mode ("Var", "30s", "1m", etc.)
-        # Assume self.intervals is a dictionary mapping these strings to seconds.
-        # Placeholder for self.intervals (you'll set this up later)
-
-        interval_sec = self.intervals.get(self.interval, 0) # Get seconds, 0 for "Var"
-
+        # 3. DETERMINE Interval Mode
+        interval_sec = self.report_intervals.get(self.report_interval, 0)
+        is_mode_switch = (self.prev_report_interval != self.report_interval)
+        is_var_mode = (self.report_interval == 'Var' or interval_sec == 0)
+        
+        # Number of samples (which equals interval_sec if sampling is 1s per loop)
+        interval_samples = max(1, interval_sec) 
+        
+        # Total number of available samples
+        total_history_count = len(self.infos)
+        
+        self.prev_report_interval = self.report_interval # Update for next loop's check
+        
+        # ----------------------------------------------------------------------
+        # B. DISPLAY LOGIC (Var vs. Fixed)
+        # ----------------------------------------------------------------------
+        
         slices = []
 
-        if self.interval == 'Var' or interval_sec == 0:
-            # --- Variable Interval Display (Original Adaptive Logic) ---
-            # Show as many evenly spaced samples as fit on the screen, spanning all history.
-
-            total_history_count = len(self.infos)
+        if is_var_mode:
+            # --- Variable Interval Display (Existing Adaptive Logic) ---
+            
             col_cnt = min(max_col_cnt, total_history_count)
 
             if total_history_count <= col_cnt:
                 slices = self.infos
             else:
-                # Samples are evenly distributed across the entire history
                 for cnt in range(col_cnt - 1):
-                    # Position is rounded to find the index for even distribution
                     position = int(round(cnt * (total_history_count - 1) / (col_cnt - 1)))
                     slices.append(self.infos[position])
-                slices.append(self.infos[-1]) # Always include the latest snapshot
-
+                slices.append(self.infos[-1]) 
+            
+            # In Var mode, reset the stable state variables
+            self.last_complete_sample_index = 0
+            self.historical_slices = []
         else:
-            # --- Fixed Interval Display (New Time-Based Logic) ---
+            # --- Fixed Interval Display (Sample Indexing Logic) ---
+            
+            # Guard Check: If we don't have enough samples for even one historical column, 
+            # do NOT calculate new_complete_index. The historical_slices must remain empty.
+            if total_history_count < interval_samples:
+                self.last_complete_sample_index = 0
+                self.historical_slices = []
+                slices = [] # Ensure slices is empty for the next step, only current sample will be added.
+            else:
+                # If mode switched, reset the anchor index
+                if is_mode_switch:
+                     self.last_complete_sample_index = 0 
+                     
+                # --- Calculate the index of the newest complete historical bucket ---
+                
+                # Calculate how many samples are in the current, incomplete 'tail'
+                incomplete_tail_size = total_history_count % interval_samples
 
-            current_mono_time = self.infos[-1]['_mono']
-            oldest_available_time = self.infos[0]['_mono'] # The time of the absolute oldest snapshot
+                # Determine the index of the newest complete historical bucket
+                
+                if incomplete_tail_size == 0:
+                    # History is perfectly aligned. We want the index of the 
+                    # last sample of the *previous* complete bucket.
+                    new_complete_index = max(0, total_history_count - interval_samples - 1)
+                else:
+                    # History is not aligned. We retreat by the size of the incomplete tail.
+                    new_complete_index = max(0, total_history_count - incomplete_tail_size - 1)
+                
+                # 1. Check for a full bucket completion (The "Split" Event)
+                should_regenerate = is_mode_switch
+                
+                if new_complete_index > self.last_complete_sample_index:
+                    # A new bucket has completed, we must regenerate the stable columns.
+                    self.last_complete_sample_index = new_complete_index
+                    should_regenerate = True
 
-            # The column indices represent time deltas: 0s, 5m, 10m, 15m, ...
-            # We iterate backward in time, from the largest delta down to the current (i=0).
-            for i in range(max_col_cnt - 1, -1, -1):
+                # 2. Regeneration
+                if should_regenerate:
+                    
+                    historical_slices = []
+                    current_idx = self.last_complete_sample_index
+                    
+                    # We want max_col_cnt - 1 historical slices
+                    for _ in range(max_col_cnt - 1):
+                        
+                        if current_idx < 0 or current_idx >= total_history_count:
+                            break
+                            
+                        historical_slices.append(self.infos[current_idx])
+                        current_idx -= interval_samples
+                    
+                    historical_slices.reverse()
+                    self.historical_slices = historical_slices 
 
-                target_delta = i * interval_sec
-                target_time = current_mono_time - target_delta
+                # 3. Use the stable historical slices for display
+                slices = self.historical_slices[:]
 
-                # Break if the required target time is OLDER than the oldest data we have.
-                # This prevents generating empty columns for non-existent history.
-                if target_time < oldest_available_time:
-                    continue # Skip this target and try the next one (less old)
+        # ----------------------------------------------------------------------
+        # C. FINAL SLICE PREPARATION AND RENDERING
+        # ----------------------------------------------------------------------
 
-                # Find the best match in self.infos for the target_time (Fuzzy Match)
-                best_match = None
-                min_time_diff = float('inf')
-
-                # Iterate backward through history for the closest match (fastest)
-                # We start checking from the newest data (self.infos[-1])
-                for info in reversed(self.infos):
-                    time_diff = abs(info['_mono'] - target_time)
-
-                    if time_diff < min_time_diff:
-                        best_match = info
-                        min_time_diff = time_diff
-                    elif info['_mono'] < target_time:
-                        # Optimization: If the current 'info' is older than the target,
-                        # and the time difference is now increasing, we can stop early
-                        # as we've already found the best match near 'target_time'.
-                        break
-
-                if best_match and (not slices or slices[0] is not best_match):
-                    # Prepend the slice to ensure it's in the correct time order (oldest -> newest)
-                    slices.insert(0, best_match)
-
-        # Ensure the current/latest snapshot is always the last item (rightmost column)
+        # Ensure the current/latest snapshot is always the last item (rightmost column).
         if not slices or slices[-1] is not self.infos[-1]:
             slices.append(self.infos[-1])
 
-        # Render the final slices
-        self.slices = slices # Store the slices for debug/dump purposes
-        self.render_slices(slices)
-
-    def update_report_data(self):
-        """ Get new data and report on it. """
-        info = self._read_info()
-        self._append_info(info)
-        self.term_width, _ = shutil.get_terminal_size()
-        cols_width = self.term_width - self.key_width
-        if self.page == 'edit':
-            cols_width -= 4  # for ' ** '
-        col_cnt = max(1, cols_width//(1+self.data_width))
-
-        if len(self.infos) <= col_cnt:
-            self.slices = self.infos
-        else:
-            self.slices = []
-            for cnt in range(col_cnt-1):
-                position = int(round(cnt*(len(self.infos)-1)/(col_cnt-1)))
-                self.slices.append(self.infos[position])
-            self.slices.append(self.infos[-1])
+        self.slices = slices 
         self.render_slices()
 
     def render_help_screen(self):
