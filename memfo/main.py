@@ -31,6 +31,7 @@ import math
 from datetime import datetime
 from types import SimpleNamespace
 from console_window import ConsoleWindow , OptionSpinner
+from memfo.TimeMemory import TimeMemory, TimeSlicer
 
 
 ##############################################################################
@@ -81,6 +82,8 @@ class MemFo:
     def __init__(self, opts):
         assert not MemFo.singleton
 
+        self.history = TimeMemory(sample_secs=1)
+        self.slicer = TimeSlicer(self.history)
         self.mono_start = time.monotonic()
         self.fh = open('/proc/meminfo', 'r', encoding='utf-8')
         self.DB = opts.DB
@@ -270,68 +273,6 @@ class MemFo:
                     add_row(key, text, zero=bool(peak==0))
         self.report_rows = rows
 
-    def _append_info(self, info):
-        """ Add and compress memory with fixed time retention and unified
-            physical/logical compression for uniform sample spacing.
-        """
-        # Configuration Constants
-        MAX_INFOS = 600  # Target number of intervals (divisible by 2, 3, 5)
-        COMPRESSION_MULTIPLIERS = [5, 3, 2, 2, 5, 3, 2, 2, 4, 3, 2, 2, 2, 2]
-          # 5s, 15s, 30s, 1m, 5m, 15m, 30m, 1h, 4h, 12h, 1d, 2d, 4d, 8d
-        RETENTION_SEC = 24 * 60 * 60  # 24 hours of retention
-
-        # --- 1. Initial Storage / Overwrite ---
-        if not self.infos:
-            self.infos.append(info)
-            self.loops_fro_store = 0
-            self.loops_per_info = 1
-            self.comp_idx = 0
-            return
-
-        self.loops_fro_store += 1
-        if self.loops_fro_store < self.loops_per_info:
-            # Overwrite the latest snapshot to keep the most recent data fresh
-            self.infos[-1] = info
-            return
-
-        # --- 2. Store New Info (Bucket Close) ---
-        # Re-incorporated Fuzzy Close Logic:
-        # Check if enough time has actually passed to warrant closing the bucket.
-        if len(self.infos) >= 2:
-            # Floor is set to 95% of the expected time for this bucket interval
-            floor_s = self.sample_secs * self.loops_per_info * 0.95
-            delta_s = info['_mono'] - self.infos[-2]['_mono']
-
-            if delta_s < floor_s:
-                # Time says we should not close the bucket yet (too short)
-                self.loops_fro_store -= 1
-                self.infos[-1] = info # Still update the last entry
-                return
-
-        # If enough time has passed (or it's been here too long), store the new, permanent snapshot
-        self.infos.append(info)
-        self.loops_fro_store = 0
-
-        # --- 3. History Pruning (Fixed Time Retention) ---
-        # Remove snapshots older than the retention limit
-        cutoff_time = info['_mono'] - RETENTION_SEC
-        while len(self.infos) > MAX_INFOS and self.infos[0]['_mono'] < cutoff_time:
-            self.infos.pop(0)
-
-        # --- 4. Unified Adaptive Compression (Capacity and Spacing) ---
-        # Compress if we are nearing the target capacity
-        if len(self.infos) > MAX_INFOS:
-
-            # Determine the compression factor for this step
-            factor = COMPRESSION_MULTIPLIERS[self.comp_idx % len(COMPRESSION_MULTIPLIERS)]
-
-            # A. Physical Compression: Drops 1/factor of entries, maintaining uniform spacing.
-            self.infos = [self.infos[i] for i in range(0, len(self.infos), factor)]
-
-            # B. Logical Coarsening: Sets the new, wider time interval for future samples.
-            self.loops_per_info *= factor
-            self.comp_idx += 1
-
     def _read_info(self):
         self.fh.seek(0)
         info = {'_mono': time.monotonic()}
@@ -369,7 +310,7 @@ class MemFo:
 
         # 1. READ and APPEND New Data
         info = self._read_info()
-        self._append_info(info)
+        self.history.append_info(info)
 
         # 2. CALCULATE Screen Constraints
         self.term_width, _ = shutil.get_terminal_size()
@@ -396,93 +337,11 @@ class MemFo:
         
         self.prev_report_interval = self.report_interval # Update for next loop's check
         
-        # ----------------------------------------------------------------------
-        # B. DISPLAY LOGIC (Var vs. Fixed)
-        # ----------------------------------------------------------------------
-        
-        slices = []
-
         if is_var_mode:
-            # --- Variable Interval Display (Existing Adaptive Logic) ---
-            
-            col_cnt = min(max_col_cnt, total_history_count)
-
-            if total_history_count <= col_cnt:
-                slices = self.infos
-            else:
-                for cnt in range(col_cnt - 1):
-                    position = int(round(cnt * (total_history_count - 1) / (col_cnt - 1)))
-                    slices.append(self.infos[position])
-                slices.append(self.infos[-1]) 
-            
-            # In Var mode, reset the stable state variables
-            self.last_complete_sample_index = 0
-            self.historical_slices = []
+            slices = self.slicer.get_var_slices(max_col_cnt)
         else:
-            # --- Fixed Interval Display (Sample Indexing Logic) ---
-            
-            # Guard Check: If we don't have enough samples for even one historical column, 
-            # do NOT calculate new_complete_index. The historical_slices must remain empty.
-            if total_history_count < interval_samples:
-                self.last_complete_sample_index = 0
-                self.historical_slices = []
-                slices = [] # Ensure slices is empty for the next step, only current sample will be added.
-            else:
-                # If mode switched, reset the anchor index
-                if is_mode_switch:
-                     self.last_complete_sample_index = 0 
-                     
-                # --- Calculate the index of the newest complete historical bucket ---
-                
-                # Calculate how many samples are in the current, incomplete 'tail'
-                incomplete_tail_size = total_history_count % interval_samples
-
-                # Determine the index of the newest complete historical bucket
-                
-                if incomplete_tail_size == 0:
-                    # History is perfectly aligned. We want the index of the 
-                    # last sample of the *previous* complete bucket.
-                    new_complete_index = max(0, total_history_count - interval_samples - 1)
-                else:
-                    # History is not aligned. We retreat by the size of the incomplete tail.
-                    new_complete_index = max(0, total_history_count - incomplete_tail_size - 1)
-                
-                # 1. Check for a full bucket completion (The "Split" Event)
-                should_regenerate = is_mode_switch
-                
-                if new_complete_index > self.last_complete_sample_index:
-                    # A new bucket has completed, we must regenerate the stable columns.
-                    self.last_complete_sample_index = new_complete_index
-                    should_regenerate = True
-
-                # 2. Regeneration
-                if should_regenerate:
-                    
-                    historical_slices = []
-                    current_idx = self.last_complete_sample_index
-                    
-                    # We want max_col_cnt - 1 historical slices
-                    for _ in range(max_col_cnt - 1):
-                        
-                        if current_idx < 0 or current_idx >= total_history_count:
-                            break
-                            
-                        historical_slices.append(self.infos[current_idx])
-                        current_idx -= interval_samples
-                    
-                    historical_slices.reverse()
-                    self.historical_slices = historical_slices 
-
-                # 3. Use the stable historical slices for display
-                slices = self.historical_slices[:]
-
-        # ----------------------------------------------------------------------
-        # C. FINAL SLICE PREPARATION AND RENDERING
-        # ----------------------------------------------------------------------
-
-        # Ensure the current/latest snapshot is always the last item (rightmost column).
-        if not slices or slices[-1] is not self.infos[-1]:
-            slices.append(self.infos[-1])
+            slices = self.slicer.get_fixed_slices(interval_sec,
+                        max_col_cnt, is_mode_switch)
 
         self.slices = slices 
         self.render_slices()
