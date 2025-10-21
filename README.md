@@ -1,8 +1,21 @@
 >**Quick Start**
-* **On python 3.11+, install with**: `pipx upgraded memfo || pipx install memfo`
-* **On python 3.8 to 3.10, install with**: `pip install --upgrade --user memfo`
-* **After install, run**: `memfo` and enter `?` for help.
-# memfo -- /proc/meminfo Viewer for Linux
+>* **On python 3.11+, install with**: `pipx upgraded memfo || pipx install memfo`
+>* **On python 3.8 to 3.10, install with**: `pip install --upgrade --user memfo`
+>* **After install, run**: `memfo` and enter `?` for help.
+
+# memfo: Memory Footprint Observer
+
+A highly efficient, real-time Linux memory monitoring tool built in Python.
+
+memfo provides a low-overhead, stable, and highly configurable view of your system's /proc/meminfo data, designed specifically for long-term monitoring and performance debugging.
+
+## Features at a Glance
+
+* Fixed-Interval Stability: Unlike standard tools, memfo offers a stable, fixed-interval sliding window display (e.g., 5s buckets). Historical columns remain fixed until a new interval is fully completed, eliminating the frustrating visual "drift" common in adaptive monitoring tools.
+* Adaptive History Mode ('Var'): Automatically samples the entire history buffer, distributing samples evenly across the display columns for a high-level overview.
+* Minimal Overhead: Consumes less than 1% CPU and minimal memory, making it ideal for monitoring resource-constrained environments or performance-sensitive applications.
+* Data Flexibility: Switch units instantly (MiB, KiB, GiB), toggle between absolute values and per-second deltas, and hide zero values.
+* Full History Dump: Easily export the entire accumulated history (up to 1 hour of 1s samples, 10 hours of 10s samples, etc.) to a standard CSV file for offline analysis.
 
 `memfo` is a viewer for `/proc/meminfo` that shows meminfo:
 * as a continuously updated display of current and past values,
@@ -13,38 +26,43 @@
 
 ## Example memfo Output
 ```
-u:MiB d:show-values z=show-if-zero e:enter-edit ?=help
-        0s        10s        20s        28s        37s        47s 01/28 12:51:27
-      +0.0       +0.0       +0.0       +0.0       +0.0   32,060.8 MemTotal
-    +222.7     -106.9     -106.4     -103.4      -71.3   22,325.0 MemAvailable
-──────────────────────────────────────────────────────────────────────────────────────
-    +222.6     -106.6     -103.8     -101.1      -68.9   15,776.4 MemFree
-      +0.0       +0.0       +0.0       +0.0       +0.0       93.6 Buffers
-     -24.0       -0.3       -2.6       -2.2       -2.4    7,726.8 Cached
-    -322.8      +14.5      +24.9      +22.9       -4.2    7,989.8 Active
-      +0.1       -0.3       -2.6       -2.3       -2.4    5,464.2 Inactive
-    -322.8      +14.5      +24.9      +22.9       -4.2    5,833.6 Active(anon)
+[u]nits:MiB [i]tvl=15s [d]eltas:off zeros=off Dump [e]dit ?=help
+        0s        15s        30s        35s 10/20 22:44:08
+   7,813.4    7,813.4    7,813.4    7,813.4 MemTotal
+   1,344.1    1,318.9    1,306.6    1,335.2 MemAvailable
+─────────────────────────────────────────────────────────────────
+     418.6      385.1      356.9      385.2 MemFree
+       0.0        0.0        0.0        0.0 Buffers
+   2,153.7    2,151.2    2,155.1    2,155.3 Cached
+       7.9        7.9        7.9        7.9 SwapCached
 ```
 NOTES:
-* the columns are absolute or delta values for the given statistic for that interval; in this case, deltas are shown.
-* the stats above the line can are chosen by the "edit" menu.
+* the columns are absolute or delta values for the given statistic for that interval; in this case, absolute values are shown.
+* the non-scrolling stats above the line are chosen by the "edit" menu.
+* in this example, the fourth column (35s) is the current, live, and incomplete interval, while the preceding columns represent full 15s buckets.
+
+Interaction keys:
+* `i`	- Interval control.	Cycles reporting interval (Var, 5s, 15s, 30s, 1m, 5m, 15m, 1h). Var means to fit the full time span of the data.
+* `u` -	Units control.	Cycles display units between MiB, KiB, and GiB.
+* `d` - Deltas control.	Toggles the display between absolute values and changes of the values.
+* `z`	- Zeros control. Toggles display of stat lines where the value is zero (helps focus on active metrics).
+* `e` - Edit Mode.	Allows nailing to top or hiding specific memory fields.
+* `D`	- Dump History.	Exports all historical samples to `/tmp/memfo.csv` for analysis.
+* `q` -	Quit. Exits the program.
+* `?`	- Help. Displays the help text.
 
 ## Command Line Options
 You selection of statistics to put in the non-scrolled region and hidden is saved a config file. If you choose another config file on start up, you can have set of statistics per for each use case.
 ```
-$ memfo -h
-usage: memfo [-h] [-u {KiB,MB,MiB,GB,GiB,human}] [-c CONFIG]
-                [-i INTERVAL_SEC] [--vmalloc-total] [-z] [-d] [--DB]
+usage: memfo [-h] [-u {KiB,MB,MiB,GB,GiB,human}] [-c CONFIG] [--vmalloc-total] [-z]
+
 options:
   -h, --help            show this help message and exit
   -u {KiB,MB,MiB,GB,GiB,human}, --units {KiB,MB,MiB,GB,GiB,human}
                         units of memory [dflt=MiB]
   -c CONFIG, --config CONFIG
                         use "{config}.ini" for configuration
-  -i INTERVAL_SEC, --interval-sec INTERVAL_SEC
-                        loop interval in seconds [dflt=1.0]
   --vmalloc-total       Show "VmallocTotal" row (which is mostly useless)
   -z, --zeros           Show lines with all zeros
-  -d, --dump            "print" the data only once rather than "display" it
-  --DB                  add some debugging output
+
 ```

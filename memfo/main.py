@@ -465,8 +465,6 @@ def main():
             default='MiB', help='units of memory [dflt=MiB]')
     parser.add_argument('-c', '--config', type=str, default='memfo',
             help='use "{config}.ini" for configuration')
-    parser.add_argument('-i', '--interval-sec', type=float, default=1.0,
-            help='loop interval in seconds [dflt=1.0] ')
     parser.add_argument('--vmalloc-total', action="store_true",
             help='Show "VmallocTotal" row (which is mostly useless)')
     parser.add_argument('-z', '--zeros', action="store_true",

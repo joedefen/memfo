@@ -4,7 +4,7 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "memfo"
-version = "1.0.6"
+version = "2.0.0"
 description = "Display Tool for /proc/meminfo"
 authors = [
     { name = "Joe Defen", email = "joedef@duck.com" }
