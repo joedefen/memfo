@@ -3,9 +3,6 @@
 """
 memfo is a viewer for /proc/meminfo
 TODO:
-- add [i]tvl=Var spiner values: Var, 30s, 1m, 5m, 15m, 1h, 4h
-    - shows as many, say, 5m intervals as can fit on the screen (showing current last or rightmost)
-    - if 5m not available, then it goes up to next option (silently)
 - add dump-to-csv key and it put current samples into a file.... maybe takes
    over header line for 10s to show feedback
 - ensure collection is being done during help screen and edit screen (not sure)
@@ -27,7 +24,6 @@ import configparser
 import time
 import curses
 import shutil
-import math
 from datetime import datetime
 from types import SimpleNamespace
 from console_window import ConsoleWindow , OptionSpinner
@@ -82,17 +78,15 @@ class MemFo:
     def __init__(self, opts):
         assert not MemFo.singleton
 
-        self.history = TimeMemory(sample_secs=1)
+        self.sample_secs = 1
+        self.history = TimeMemory(sample_secs=self.sample_secs)
         self.slicer = TimeSlicer(self.history)
         self.mono_start = time.monotonic()
         self.fh = open('/proc/meminfo', 'r', encoding='utf-8')
-        self.DB = opts.DB
-        self.dump = opts.dump
         self.vmalloc_total = opts.vmalloc_total
         if self.vmalloc_total:
             MemFo.max_value *= 1000
         self.zeros = opts.zeros
-        self.sample_secs = 1.0
         self.config_basename = opts.config
 
         self.units, self.divisor, self.data_width = opts.units, 0, 0
@@ -103,16 +97,7 @@ class MemFo:
         self.edit_mode = False # true in when editing
         self.help_mode = False # true in when in help screen
         self.report_interval = 'Var'  # column interval
-        self.infos = []
-        self.slices = []  # combined infos
-        self.last_bucket_end_time = None
-        self.historical_slices = None
         self.prev_report_interval = None
-        self.report_anchor_mono_time = None
-        self.last_processed_bucket_end = None
-        self.comp_idx = 0  # tracks factor to use when squeezing memory
-        self.loops_per_info = 1
-        self.loops_fro_store = 0
         self.term_width = 0 # how wide is the terminal
         self.report_intervals = {'Var': 0, '5s': 5, '15s': 15,
                                 '30s': 30, '1m': 60, '5m': 300,
@@ -229,7 +214,7 @@ class MemFo:
                 rv = f'{int(value):{sign}{self.data_width},d}'
         return rv
 
-    def render_slices(self):
+    def render_slices(self, slices):
         """ TBD """
         def add_row(key, text, zero=False):
             nonlocal rows
@@ -248,18 +233,18 @@ class MemFo:
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
         add_row(key='_lead', text=text)
 
-        for ii, info in enumerate(self.slices):
+        for ii, info in enumerate(slices):
             for key in list(info.keys())[:count]:
                 if key == '_mono':
-                    ago = f'{ago_str(info["_mono"]-self.mono_start)}'
+                    ago = f'{ago_str(info["_mono"])}'
                     text = f'{ago:>{self.data_width}}'
-                    if ii == len(self.slices)-1:
+                    if ii == len(slices)-1:
                         time_str = datetime.now().strftime("%m/%d %H:%M:%S")
                         text += f' {time_str}'
                 else:
                     val = info[key]
-                    if ii < len(self.slices)-1 and self.delta:
-                        next_val = self.slices[ii+1][key]
+                    if ii < len(slices)-1 and self.delta:
+                        next_val = slices[ii+1][key]
                         text = self.render(next_val-val, sign=True)
                     else:
                         text = self.render(val)
@@ -269,13 +254,14 @@ class MemFo:
                 elif key.startswith('_') or key in self.non_zeros:
                     add_row(key, text)
                 else:
-                    peak = max([info[key] for info in self.slices])
+                    peak = max([info[key] for info in slices])
                     add_row(key, text, zero=bool(peak==0))
         self.report_rows = rows
 
     def _read_info(self):
         self.fh.seek(0)
-        info = {'_mono': time.monotonic()}
+        info = {'_mono': int(round(time.monotonic()-self.mono_start)),
+                '_time': time.time()}
         for line in self.fh:
             mat = re.match(r'^([^:]+):\s*(\d+)\s*(|kB)$', line)
             if mat:
@@ -287,26 +273,16 @@ class MemFo:
         if not self.key_width:
             self.key_width = max([len(k) for k in info])
 
-        # if self.DB:
-            # self.dump_infos([info])
         return info
 
     def update_report_data(self):
-        """ Get new data and report on it, sampling history based on sample count 
+        """ Get new data and report on it, sampling history based on sample count
             (fixed interval) or adaptive logic (Var).
         """
-        
+
         # ----------------------------------------------------------------------
         # 0. INITIALIZATION AND SETUP
         # ----------------------------------------------------------------------
-        
-        # Initialize stable state variables (must persist across loops)
-        if not hasattr(self, 'last_complete_sample_index'):
-            self.last_complete_sample_index = 0
-        if not hasattr(self, 'prev_report_interval'):
-            self.prev_report_interval = self.report_interval 
-        if not hasattr(self, 'historical_slices'):
-            self.historical_slices = []
 
         # 1. READ and APPEND New Data
         info = self._read_info()
@@ -319,32 +295,25 @@ class MemFo:
         cols_width = self.term_width - self.key_width
 
         if self.page == 'edit':
-            cols_width -= 4 
+            cols_width -= 4
 
         # Maximum number of columns that can physically fit on the screen
         max_col_cnt = max(1, cols_width // (1 + self.data_width))
 
         # 3. DETERMINE Interval Mode
         interval_sec = self.report_intervals.get(self.report_interval, 0)
-        is_mode_switch = (self.prev_report_interval != self.report_interval)
+        is_mode_switch = bool(self.prev_report_interval != self.report_interval)
         is_var_mode = (self.report_interval == 'Var' or interval_sec == 0)
-        
-        # Number of samples (which equals interval_sec if sampling is 1s per loop)
-        interval_samples = max(1, interval_sec) 
-        
-        # Total number of available samples
-        total_history_count = len(self.infos)
-        
+
         self.prev_report_interval = self.report_interval # Update for next loop's check
-        
+
         if is_var_mode:
             slices = self.slicer.get_var_slices(max_col_cnt)
         else:
             slices = self.slicer.get_fixed_slices(interval_sec,
                         max_col_cnt, is_mode_switch)
 
-        self.slices = slices 
-        self.render_slices()
+        self.render_slices(slices)
 
     def render_help_screen(self):
         """Populate help screen"""
@@ -419,7 +388,7 @@ class MemFo:
 
             elif key in (ord('*'), ord('-'), ord('r'), ord('R') ):
                 if self.page in ('edit', ):
-                    row = list(self.report_rows.values())[self.win.pick_pos+2]
+                    row = list(self.report_rows.values())[self.win.pick_pos+3]
                     param = row.key
                     if key == ord('*'):
                         self.hides.discard(param)
@@ -460,14 +429,6 @@ class MemFo:
         while True:
             self.update_report_data()
 
-            if self.dump:
-                texts = [f'{row.text} {row.key}' for row in self.report_rows.values()
-                         if not row.key.startswith('_')]
-                print('\n' + '\n'.join(texts) + '\n')
-                if self.DB:
-                    print([ago_str(info['_mono']-self.mono_start) for info in self.slices])
-                time.sleep(self.sample_secs)
-                break
             self.do_window()
 
 memfo = None
@@ -487,10 +448,6 @@ def main():
             help='Show "VmallocTotal" row (which is mostly useless)')
     parser.add_argument('-z', '--zeros', action="store_true",
             help='Show lines with all zeros')
-    parser.add_argument('-d', '--dump', action="store_true",
-            help='"print" the data only once rather than "display" it')
-    parser.add_argument('--DB', action="store_true",
-            help='add some debugging output')
     opts = parser.parse_args()
 
     memfo = MemFo(opts)

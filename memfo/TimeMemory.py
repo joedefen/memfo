@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+""" Encapsulates
+    - TimeMemory - storing samples
+    - TimeSlicer - selecting samples for display
+"""
+# pylint: disable=line-too-long,invalid-name,too-few-public-methods
 import copy
 from typing import List, Dict, Any
 
@@ -9,7 +14,7 @@ class TimeMemory:
     """
     Manages a time-series history using discrete sample indices and adaptive
     compression, ensuring the 'infos' list is always complete (no missing gaps)
-    and runs backwards (newest at index 0).
+    and runs backwards (newest at index 0). 
     """
 
     # Configuration Constants
@@ -27,7 +32,7 @@ class TimeMemory:
     def _get_info_nums(self, info: Dict[str, Any]) -> tuple[int, int]:
         """Calculates the discrete sample and bucket indices for a given info object."""
         # Note: info['_mono'] is assumed to be a high-resolution monotonic time
-        info_sample_num = int(round(info['_mono']))
+        info_sample_num = info['_mono']
         info_num = info_sample_num // self.info_secs
         return info_sample_num, info_num
 
@@ -59,11 +64,11 @@ class TimeMemory:
 
         # --- 4. Insert New Info and Fill Gaps (new_info_num > current_top_num) ---
         missing_count = new_info_num - current_top_num - 1
-        
+
         for i in range(missing_count):
             missing_num = current_top_num + i + 1
             synthetic_info = copy.deepcopy(self.infos[0])
-            synthetic_info['_mono'] = float(missing_num * self.info_secs)
+            synthetic_info['_mono'] = int(missing_num * self.info_secs)
             self.infos.insert(0, synthetic_info)
 
         self.infos.insert(0, info)
@@ -78,7 +83,7 @@ class TimeMemory:
         # --- 6. Unified Adaptive Compression (Capacity and Spacing) ---
         if len(self.infos) > self.MAX_INFOS:
             factor = self.COMPRESSION_MULTIPLIERS[self.comp_idx % len(self.COMPRESSION_MULTIPLIERS)]
-            
+
             compressed_infos = [self.infos[i] for i in range(0, len(self.infos), factor)]
 
             old_info_secs = self.info_secs
@@ -93,6 +98,7 @@ class TimeMemory:
 # --- The TimeSlicer Logic ---
 
 class TimeSlicer:
+    """ Class for choosing samples for the few columns that are displayed """
     def __init__(self, history):
         # Data storage using the new class
         self.history = history
@@ -117,14 +123,14 @@ class TimeSlicer:
         else:
             where, spread = 0, (total_history_count-1) / (max_col_cnt-1)
             # Slices must run from newest (0) to oldest (N-1) for sampling.
-            for cnt in range(max_col_cnt):
+            for _ in range(max_col_cnt):
                 index = int(round(where))
                 slices.append(infos[index])
                 where += spread
-                
+
         # Slices were collected backwards (index 0 is newest), so reverse them to get [Oldest...Newest].
         slices.reverse()
-        
+
         return slices
 
 
@@ -132,7 +138,7 @@ class TimeSlicer:
                          is_mode_switch: bool) -> List[Dict[str, Any]]:
         """
         Fixed Interval Display: Uses state to hold columns stable. The last column
-        is always the "live" current sample. Historical columns only change when 
+        is always the "live" current sample. Historical columns only change when
         a full bucket completes (shift) or the screen size changes (regenerate).
         """
         infos = self.history.infos # short hand
@@ -145,10 +151,10 @@ class TimeSlicer:
         # 1. Guard Check ... if there is only one column return it
         if total_history_count < interval_samples:
             self.last_complete_sample_index = 0
-            
+
             # --- FINAL SLICE PREPARATION ---
             return [infos[0]] if infos else []
-        
+
         # find the stable point sample of the last "fixed" column (i.e., the one
         # before the current column)
         stable_sample_idx = len(infos)-1
@@ -165,7 +171,7 @@ class TimeSlicer:
         # until we run out or need no more
         slices = []
         current_idx = stable_sample_idx
-        for _ in range(max_col_cnt-1): 
+        for _ in range(max_col_cnt-1):
             if current_idx >= total_history_count or current_idx < 0:
                 break
             slices.append(infos[current_idx])
