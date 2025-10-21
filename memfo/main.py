@@ -28,6 +28,7 @@ from datetime import datetime
 from types import SimpleNamespace
 from console_window import ConsoleWindow , OptionSpinner
 from memfo.TimeMemory import TimeMemory, TimeSlicer
+from memfo.dumper import dump_to_csv
 
 
 ##############################################################################
@@ -97,7 +98,7 @@ class MemFo:
         self.edit_mode = False # true in when editing
         self.help_mode = False # true in when in help screen
         self.report_interval = 'Var'  # column interval
-        self.prev_report_interval = None
+        self.prev_report_interval_secs = None
         self.term_width = 0 # how wide is the terminal
         self.report_intervals = {'Var': 0, '5s': 5, '15s': 15,
                                 '30s': 30, '1m': 60, '5m': 300,
@@ -107,6 +108,8 @@ class MemFo:
         self.data_width = None
         self.report_rows = None # the stuff to display
         self._set_units()
+        self.message = ''
+        self.message_mono = None
 
         self.non_zeros = set() # ever non-zero since program started
         self.freezes = set()  # fields that are frozen (above the line)
@@ -128,6 +131,8 @@ class MemFo:
         self.spin.add_key('delta', 'd - show deltas',
                           vals=[False, True], obj=self)
         self.spin.add_key('zeros', 'z - show all zeros lines',
+                          vals=[False, True], obj=self)
+        self.spin.add_key('dump_report', 'D - dump history stats to /tmp/memfo.csv',
                           vals=[False, True], obj=self)
         self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
                 comments='"*" freezes lines; "-" hides lines', obj=self)
@@ -226,8 +231,12 @@ class MemFo:
         rows = {}
         delta = 'ON' if self.delta else 'off'
         zeros = 'ON' if self.zeros else 'off'
-        if self.page == 'normal':
-            text = f'[u]nits:{self.units} [i]tvl={self.report_interval} [d]eltas:{delta} zeros={zeros} [e]dit ?=help'
+        if self.message and self.message_mono is not None:
+            text = f"****  ALERT: {self.message} ****"
+            if time.monotonic() - self.message_mono >= 10.0:
+                self.message, self.message_mono = '', None
+        elif self.page == 'normal':
+            text = f'[u]nits:{self.units} [i]tvl={self.report_interval} [d]eltas:{delta} zeros={zeros} Dump [e]dit ?=help'
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
@@ -301,16 +310,18 @@ class MemFo:
         max_col_cnt = max(1, cols_width // (1 + self.data_width))
 
         # 3. DETERMINE Interval Mode
-        interval_sec = self.report_intervals.get(self.report_interval, 0)
-        is_mode_switch = bool(self.prev_report_interval != self.report_interval)
-        is_var_mode = (self.report_interval == 'Var' or interval_sec == 0)
+        interval_secs = self.report_intervals.get(self.report_interval, 0)
+        if interval_secs > 0:
+            interval_secs = max(interval_secs, self.history.info_secs)
+        is_mode_switch = bool(self.prev_report_interval_secs != interval_secs)
+        is_var_mode = (self.report_interval == 'Var' or interval_secs == 0)
 
-        self.prev_report_interval = self.report_interval # Update for next loop's check
+        self.prev_report_interval_secs = self.report_interval # Update for next loop's check
 
         if is_var_mode:
             slices = self.slicer.get_var_slices(max_col_cnt)
         else:
-            slices = self.slicer.get_fixed_slices(interval_sec,
+            slices = self.slicer.get_fixed_slices(interval_secs,
                         max_col_cnt, is_mode_switch)
 
         self.render_slices(slices)
@@ -330,7 +341,9 @@ class MemFo:
         """ TBD"""
         self.win.clear()
         for row in self.report_rows.values():
-            if row.key.startswith('_'):
+            if row.key.startswith('_time'):
+                pass
+            elif row.key.startswith('_'):
                 self.win.add_header(row.text, attr=curses.A_BOLD)
             elif row.key in self.freezes:
                 self.win.add_header(f'{row.text} {row.key}')
@@ -382,9 +395,12 @@ class MemFo:
                     self._set_units()
                 elif key in (ord('?'), ):
                     set_page()
-
                 elif key in (ord('e'), ):
                     set_page()
+                elif self.dump_report:
+                    self.message = dump_to_csv(self.history.infos)
+                    self.message_mono = time.monotonic()
+                    self.dump_report = False
 
             elif key in (ord('*'), ord('-'), ord('r'), ord('R') ):
                 if self.page in ('edit', ):
@@ -422,7 +438,14 @@ class MemFo:
             self.render_edit_report()
         else: # normal mode
             self.render_normal_report()
-        do_key(self.win.prompt(seconds=self.sample_secs))
+
+        delta_float = time.monotonic() - self.mono_start
+        delta_int = int(round(delta_float))
+        pause_secs = delta_int - delta_float # how early in secs
+        if delta_int <= self.history.prev_info_mono:
+            pause_secs += 1.0
+
+        do_key(self.win.prompt(seconds=max(0.0, pause_secs)))
 
     def loop(self):
         """ The main loop for the program """

@@ -28,6 +28,7 @@ class TimeMemory:
         self.info_secs = sample_secs
         self.info_base_num: int = 0
         self.comp_idx: int = 0
+        self.prev_info_mono = 0
 
     def _get_info_nums(self, info: Dict[str, Any]) -> tuple[int, int]:
         """Calculates the discrete sample and bucket indices for a given info object."""
@@ -41,7 +42,7 @@ class TimeMemory:
         Adds the info object, filling gaps with synthetic data and managing
         fixed-size, adaptively compressed memory.
         """
-        _, new_info_num = self._get_info_nums(info)
+        self.prev_info_mono, new_info_num = self._get_info_nums(info)
 
         # --- 1. Initialization (First Run) ---
         if not self.infos:
@@ -130,7 +131,6 @@ class TimeSlicer:
 
         # Slices were collected backwards (index 0 is newest), so reverse them to get [Oldest...Newest].
         slices.reverse()
-
         return slices
 
 
@@ -163,8 +163,10 @@ class TimeSlicer:
                 if self.stable_sample_mono >= info['_mono']:
                     stable_sample_idx = idx
                     break
-        while stable_sample_idx > interval_samples:
-            stable_sample_idx -= interval_samples
+        # shift stable_sample_idx to newest short of current
+        stable_sample_idx = stable_sample_idx % interval_samples
+        if stable_sample_idx == 0:
+            stable_sample_idx += interval_samples
         self.stable_sample_mono = infos[stable_sample_idx]['_mono']
 
         # create the slices going backwards from our stable index

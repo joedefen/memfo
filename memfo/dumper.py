@@ -14,7 +14,6 @@ def dump_to_csv(infos):
     """
 
     filename = "/tmp/memfo.csv"
-
     if not infos:
         return ''
 
@@ -25,7 +24,7 @@ def dump_to_csv(infos):
     # --- 2. Prepare Data Rows ---
     data_rows = []
 
-    for sample in infos:
+    for sample in reversed(infos):
         # Convert the internal wall-clock timestamp (seconds since epoch) to ISO format
         # Use UTC for consistency across environments
         row = []
