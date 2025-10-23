@@ -24,7 +24,7 @@ dependencies = [
 
 [project.scripts]
 memfo = "memfo.main:run"
-memfo-tmux = "memfo.memfo_tmux:main"
+memfod = "memfo.memfod:main"
 
 [project.urls]
 "Homepage" = "https://github.com/joedefen/memfo"

@@ -25,7 +25,7 @@ Also, it features:
 * Data Flexibility: Switch units instantly (MiB, KiB, GiB), toggle between absolute values and per-second deltas, and hide zero values.
 * Full History Dump: Easily export the entire accumulated history (up to 600 samples cover the last 24 hours at most).
 
-Additionally, `memfo-tmux` is a utility script that starts `memfo` in a `tmux` session if not already running, and then attaches to the new or preexisting session. Run `memfo-tmux help` to see its arguments, but normally, just run it w/o arguments.
+Additionally, `memfod` is a utility script that starts `memfo` in a `tmux` session if not already running, and then attaches to the new or preexisting session. Run `memfod help` to see its arguments, but normally, just run it w/o arguments.
 
 ## Example memfo Output
 ```

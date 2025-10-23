@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 BASH_SCRIPT_CONTENT = """#!/usr/bin/env bash
-# memfo-tmux.sh
+# memfod.sh
 # A dedicated tmux wrapper script to manage a persistent, long-running
 # session for the memfo memory monitoring tool.
 
@@ -34,7 +34,7 @@ is_pane_running_daemon() {
     return $?
 }
 
-d_start_or_attach() {
+d_start() {
     # 1. Check if the main tmux session exists
     if ! tmux has-session -t ${SESSION_NAME} 2>/dev/null; then
         echo "NOTE: Session '${SESSION_NAME}' not found. Creating and starting '${DAEMON}'."
@@ -62,6 +62,10 @@ d_start_or_attach() {
             echo "NOTE: '${DAEMON}' is already running persistently in session '${SESSION_NAME}'."
         fi
     fi
+}
+
+d_attach() {
+    d_start
 
     # 3. Attach the user to the session
     echo "Attaching to tmux session '${SESSION_NAME}'..."
@@ -104,9 +108,11 @@ case "$1" in
             echo "NOTE: ${DAEMON} is NOT running persistently or session is dead."
         fi
         ;;
-    start|attach|"")
-        # Default action: start or attach
-        d_start_or_attach
+    start) # Default action: start
+        d_start
+        ;;
+    attach|"") # Default action: attach (which starts if needed)
+        d_attach
         ;;
     *)
         echo "Usage: $0 {start|stop|restart|status|attach}" >&2
@@ -127,7 +133,7 @@ def main():
 
     # Executable path: The bash interpreter
     program = "/bin/bash"
-    script_arg0 = 'memfo-tmux'
+    script_arg0 = 'memfod'
     
     # Replace the current process with the new command
     try:
