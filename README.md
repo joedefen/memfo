@@ -11,18 +11,21 @@ memfo provides a low-overhead, stable, and highly configurable view of your syst
 
 ## Features at a Glance
 
-* Fixed-Interval Stability: Unlike standard tools, memfo offers a stable, fixed-interval sliding window display (e.g., 5s buckets). Historical columns remain fixed until a new interval is fully completed, eliminating the frustrating visual "drift" common in adaptive monitoring tools.
-* Adaptive History Mode ('Var'): Automatically samples the entire history buffer, distributing samples evenly across the display columns for a high-level overview.
-* Minimal Overhead: Consumes less than 1% CPU and minimal memory, making it ideal for monitoring resource-constrained environments or performance-sensitive applications.
-* Data Flexibility: Switch units instantly (MiB, KiB, GiB), toggle between absolute values and per-second deltas, and hide zero values.
-* Full History Dump: Easily export the entire accumulated history (up to 1 hour of 1s samples, 10 hours of 10s samples, etc.) to a standard CSV file for offline analysis.
-
 `memfo` is a viewer for `/proc/meminfo` that shows meminfo:
 * as a continuously updated display of current and past values,
 * with numbers represented in chosen units,
 * with selected fields at the top in the frozen section of the display,
 * with the ability to hide certain fields, and
 * more.
+
+Also, it features:
+* Fixed-Interval Stability: Unlike standard tools, `memfo` offers a stable, fixed-interval sliding window display (e.g., 5s buckets). Historical columns remain fixed until a new interval is fully completed, eliminating the frustrating visual "drift" common in adaptive monitoring tools.
+* Adaptive History Mode ('Var'): Automatically samples the entire history buffer, distributing samples evenly across the display columns for a high-level overview.
+* Minimal Overhead: Consumes less than 1% CPU and minimal memory, making it ideal for monitoring resource-constrained environments or performance-sensitive applications.
+* Data Flexibility: Switch units instantly (MiB, KiB, GiB), toggle between absolute values and per-second deltas, and hide zero values.
+* Full History Dump: Easily export the entire accumulated history (up to 600 samples cover the last 24 hours at most).
+
+Additionally, `memfo-tmux` is a utility script that starts `memfo` in a `tmux` session if not already running, and then attaches to the new or preexisting session. Run `memfo-tmux help` to see its arguments, but normally, just run it w/o arguments.
 
 ## Example memfo Output
 ```

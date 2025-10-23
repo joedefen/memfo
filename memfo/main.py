@@ -24,11 +24,72 @@ import configparser
 import time
 import curses
 import shutil
+import subprocess
+import signal
 from datetime import datetime
 from types import SimpleNamespace
 from console_window import ConsoleWindow , OptionSpinner
 from memfo.TimeMemory import TimeMemory, TimeSlicer
 from memfo.dumper import dump_to_csv
+
+##############################################################################
+def handle_quit_signal():
+    """
+    Checks if memfo is running inside the dedicated persistent 'memfo' tmux session.
+    If so, it detaches the current tmux client and prevents the Python process from exiting.
+    Otherwise, it performs a standard exit.
+    """
+    
+    # 1. Check for TMUX environment variable
+    if 'TMUX' not in os.environ:
+        # Not in tmux, perform standard exit.
+        print("Exiting memfo application.")
+        sys.exit(0)
+
+    # 2. In tmux, check if it's the specific persistent session ("memfo")
+    try:
+        # Use tmux display-message to get the current session name
+        session_name_proc = subprocess.run(
+            ['tmux', 'display-message', '-p', '#{session_name}'],
+            capture_output=True, 
+            text=True, 
+            check=True,
+            timeout=1
+        )
+        session_name = session_name_proc.stdout.strip()
+
+        if session_name == 'memfo':
+            # SUCCESS: We are in the dedicated persistent session.
+            print("\nDetaching from persistent 'memfo' session...")
+            
+            # Execute the tmux detach command.
+            # This command will immediately kill the current terminal client,
+            # but leave the memfo process running inside the session.
+            subprocess.run(['tmux', 'detach'], check=False)
+            
+            # Since the client terminal is gone, the code below is technically unreachable
+            # in that terminal, but we add a final safety measure to prevent the main loop
+            # from accidentally executing a self-termination command.
+            
+            # Raise an exception or break the input loop logic here instead of calling sys.exit()
+            raise SystemExit("Tmux client detached successfully.")
+
+        else:
+            # In tmux, but not the persistent "memfo" session (e.g., user's personal session).
+            print(f"Exiting memfo application from session '{session_name}'.")
+            sys.exit(0)
+
+    except subprocess.CalledProcessError as e:
+        # Tmux command failed (e.g., internal tmux error). Treat as normal exit.
+        print(f"Tmux command failed ({e.returncode}). Exiting.")
+        sys.exit(1)
+    except SystemExit:
+        # Already handled by the detach logic.
+        pass
+    except Exception as e:
+        # General error. Treat as normal exit.
+        print(f"An error occurred: {e}. Exiting.")
+        sys.exit(1)
 
 
 ##############################################################################
@@ -138,12 +199,14 @@ class MemFo:
                 comments='"*" freezes lines; "-" hides lines', obj=self)
         self.spin.add_key('help_mode', '? - help screen',
                           vals=[False, True], obj=self)
-
+ 
         keys_we_handle =  [ord('*'), ord('-'), ord('r'), ord('R'),
-                           curses.KEY_ENTER, 10] + list(self.spin.keys)
+                            ord('q'), 0x3,
+                            curses.KEY_ENTER, 10] + list(self.spin.keys)
 
         self.win = ConsoleWindow(head_line=True, head_rows=line_cnt,
-                          body_rows=line_cnt, keys=keys_we_handle)
+                          body_rows=line_cnt, keys=keys_we_handle,
+                          ctrl_c_terminates=False)
 
     def init_config(self):
         """ Get the configuration ... create if missing. """
@@ -236,7 +299,8 @@ class MemFo:
             if time.monotonic() - self.message_mono >= 10.0:
                 self.message, self.message_mono = '', None
         elif self.page == 'normal':
-            text = f'[u]nits:{self.units} [i]tvl={self.report_interval} [d]eltas:{delta} zeros={zeros} Dump [e]dit ?=help'
+            text = (f'[u]nits:{self.units} [i]tvl={self.report_interval}'
+                    + f' [d]eltas:{delta} zeros={zeros} Dump [e]dit ?=help [q]uit')
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
@@ -430,6 +494,9 @@ class MemFo:
                     self.edit_mode = False
                 set_page()
 
+            elif key in (0x3, ord('q')):
+                handle_quit_signal()
+
         self.start_curses()
 
         if self.page == 'help':
@@ -471,6 +538,7 @@ def main():
             help='Show lines with all zeros')
     opts = parser.parse_args()
 
+    signal.signal(signal.SIGINT, handle_quit_signal)
     memfo = MemFo(opts)
     memfo.loop()
 

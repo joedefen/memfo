@@ -22,9 +22,10 @@ dependencies = [
     'console-window >= 1.0.0',
 ]
 
+[project.scripts]
+memfo = "memfo.main:run"
+memfo-tmux = "memfo.memfo_tmux:main"
+
 [project.urls]
 "Homepage" = "https://github.com/joedefen/memfo"
 "Bug Tracker" = "https://github.com/joedefen/memfo/issues"
-
-[project.scripts]
-memfo = "memfo.main:run"
