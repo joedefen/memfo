@@ -89,8 +89,9 @@ class TimeMemory:
         # --- 6. History Pruning (Fixed Time Retention) ---
         cutoff_time = info['_mono'] - self.RETENTION_SEC
         while len(self.infos) > self.MAX_INFOS and self.infos:
-            if self.infos[-1]['_mono'] < cutoff_time:
-                del self.infos[-1]
+            if self.infos[-1]['_mono'] >= cutoff_time:
+                break
+            del self.infos[-1]
 
         # --- 7. Unified Adaptive Compression (Capacity and Spacing) ---
         if len(self.infos) > self.MAX_INFOS or force_compression:
