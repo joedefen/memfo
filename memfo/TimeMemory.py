@@ -6,6 +6,7 @@
 """
 # pylint: disable=line-too-long,invalid-name,too-few-public-methods
 import copy
+from types import SimpleNamespace
 from typing import List, Dict, Any
 
 # --- The TimeMemory Class ---
@@ -22,8 +23,9 @@ class TimeMemory:
     COMPRESSION_MULTIPLIERS: List[int] = [5, 3, 2, 2, 5, 3, 2, 2, 4, 3, 2, 2, 2, 2]
     RETENTION_SEC: int = 24 * 60 * 60
 
-    def __init__(self, initial_sample_secs: int=1):
+    def __init__(self, memfo, initial_sample_secs: int=1):
         # List of info objects, ALWAYS running backwards: [Newest Info, ..., Oldest Info]
+        self.memfo = memfo
         self.infos: List[Dict[str, Any]] = []
         self.info_secs = initial_sample_secs
         self.info_base_num: int = 0
@@ -39,7 +41,7 @@ class TimeMemory:
         Returns whether compressed
         """
         def get_fake_info(info, mono):
-            fake_info = copy.deepcopy(info)
+            fake_info = copy.copy(info)
             fake_info['_mono'] = mono
             return fake_info
 
@@ -109,11 +111,10 @@ class TimeSlicer:
     def __init__(self, history):
         # Data storage using the new class
         self.history = history
-        # index of the last sample of the stable data columns
-        self.stable_sample_mono = None
+        self.memfo = history.memfo
 
-        # Slicing State (Persisted)
-        self.slices: List[Dict[str, Any]] = []
+        self.horizontal_moves = []  # pending moves
+        self.tack = None # last rightmost column if pinned
 
     def get_var_slices(self, max_col_cnt: int) -> List[Dict[str, Any]]:
         """
@@ -146,15 +147,103 @@ class TimeSlicer:
         is always the "live" current sample. Historical columns only change when
         a full bucket completes (shift) or the screen size changes (regenerate).
         """
-        def get_last_hist_idx():
-            nonlocal self, interval_secs
-            if len(self.history.infos) < 2:
-                return 0
-            last_mono = self.history.infos[1]['_mono']
-            last_report_mono = last_mono - last_mono % interval_secs
-            last_hist_idx = 1 + (last_mono-last_report_mono) // self.history.info_secs
-            return last_hist_idx
+        def get_col_ns(idx=None, mono=None):
+            return SimpleNamespace(idx=idx, mono=mono)
 
+        def ts(ns, lead=''):
+            rv = lead
+            for n, v in vars(ns).items():
+                rv += f',{n[0]}={v}'
+            return rv
+
+
+        def get_right_col():
+            nonlocal self, interval_secs
+            right = get_col_ns()
+            if len(self.history.infos) < 2:
+                return right
+            last_mono = self.history.infos[1]['_mono']
+            right.mono = last_mono - last_mono % interval_secs
+            right.idx = 1 + (last_mono-right.mono) // self.history.info_secs
+            return right
+
+        def get_range_ns():
+            # .idx_step_by: infos per report interval
+            # .right_upper: greatest mono right col
+            # .right_lower: least mono right col
+            nonlocal self, interval_secs, max_col_cnt
+            ns = SimpleNamespace(right_upper=get_right_col())
+            info_secs = self.history.info_secs # shorthand
+            ns.idx_step_by = interval_secs//info_secs
+            ns.count = (len(self.history.infos)-ns.right_upper.idx
+                                )//ns.idx_step_by
+            ## self.memfo.dbinfo = f'cnt={str(ns.count)}'
+            ns.right_lower = get_col_ns()
+            delta_idx = max(1 + ns.count - (max_col_cnt-1), 0)*ns.idx_step_by
+            ns.right_lower.idx = ns.right_upper.idx + delta_idx
+            ns.right_lower.mono = ns.right_upper.mono - delta_idx*info_secs
+            # self.memfo.dbinfo = f'rL={str(ns.right_lower)}'
+            return ns
+
+        def legal_tack(tack, range_ns):
+            nonlocal self, interval_secs
+            upper_mono = range_ns.right_upper.mono
+            if tack.mono >= upper_mono:
+                return copy.copy(range_ns.right_upper)
+            lower_mono = range_ns.right_lower.mono
+            if tack.mono <= lower_mono:
+                return copy.copy(range_ns.right_lower)
+            # somewhere in the middle
+            rpt_idx = int(round((tack.mono - lower_mono)/interval_secs))
+            info_idx = range_ns.right_lower.idx - rpt_idx * range_ns.idx_step_by
+            return get_col_ns(idx=info_idx, mono=self.history.infos[info_idx]['_mono'])
+
+        def apply_pending_moves(range_ns):
+        # tack = range_ns.right_upper
+            nonlocal interval_secs
+            tack = copy.copy(self.tack)
+            if not tack:
+                tack = copy.copy(range_ns.right_upper)
+            else:
+                tack = legal_tack(tack, range_ns)
+            while self.horizontal_moves:
+                move = self.horizontal_moves.pop(0)
+                if move == '[':
+                    tack = range_ns.right_lower
+                    # self.memfo.dbinfo = f'{move}{str(tack)}'
+                elif move == ']':
+                    tack = range_ns.right_upper
+                    # self.memfo.dbinfo = f'{move}{str(tack)}'
+                elif move == '<':
+                    tack.idx += range_ns.idx_step_by
+                    tack.mono -= interval_secs
+                    tack = legal_tack(tack, range_ns)
+                    # self.memfo.dbinfo = f'{move}{str(tack)}'
+                elif move == '>':
+                    tack.idx -= range_ns.idx_step_by
+                    tack.mono += interval_secs
+                    # self.memfo.dbinfo = f'{ts(range_ns.right_lower,'rL')}{ts(tack,move)}'
+                    tack = legal_tack(tack, range_ns)
+                elif move == '{':
+                    delta = int(round(len(self.history.infos)/8))
+                    delta = max(1, delta // range_ns.idx_step_by)
+                    tack.idx += delta*range_ns.idx_step_by
+                    tack.mono -= delta*interval_secs
+                    # self.memfo.dbinfo = f'{ts(range_ns.right_lower,'rL')}{ts(tack,move)}'
+                    tack = legal_tack(tack, range_ns)
+                    # self.memfo.dbinfo = f'{move}{str(tack)}'
+                elif move == '}':
+                    delta = int(round(len(self.history.infos)/8))
+                    delta = max(1, delta // range_ns.idx_step_by)
+                    tack.idx -= delta*range_ns.idx_step_by
+                    tack.mono += delta*interval_secs
+                    # self.memfo.dbinfo = f'{ts(range_ns.right_lower,'rL')}{ts(tack,move)}'
+                    tack = legal_tack(tack, range_ns)
+
+                # self.memfo.dbinfo = f'{move}{str(tack)}'
+
+            tack = copy.copy(tack)
+            return tack
 
         infos = self.history.infos # short hand
         total_history_count = len(infos)
@@ -169,7 +258,10 @@ class TimeSlicer:
         # create the slices going backwards from our stable index
         # until we run out or need no more
         slices = []
-        current_idx = get_last_hist_idx()
+        range_ns = get_range_ns()
+        tack = apply_pending_moves(range_ns)
+        # tack = range_ns.right_upper
+        current_idx = tack.idx
         for _ in range(max_col_cnt-1):
             if current_idx >= total_history_count or current_idx < 0:
                 break
@@ -178,5 +270,11 @@ class TimeSlicer:
 
         slices.reverse() # Reverse to get [Oldest...Newest Stable]
         slices.append(infos[0]) # Add the newest, current sample
+
+        if tack.idx == range_ns.right_upper.idx:
+            self.tack = None
+        else:
+            self.tack = copy.copy(tack)
+        ## self.memfo.dbinfo = f'tack={str(self.tack)}'
 
         return slices

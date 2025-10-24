@@ -153,7 +153,8 @@ class MemFo:
             force_compression=False, # undocumented
         )
 
-        self.history = TimeMemory(initial_sample_secs=1)
+        self.dbinfo = ''
+        self.history = TimeMemory(self, initial_sample_secs=1)
         self.slicer = TimeSlicer(self.history)
         self.mono_start = time.monotonic()
         self.fh = open('/proc/meminfo', 'r', encoding='utf-8')
@@ -318,10 +319,9 @@ class MemFo:
             if time.monotonic() - self.message_mono >= 10.0:
                 self.message, self.message_mono = '', None
         elif self.page == 'normal':
-            mono = time.monotonic() - self.mono_start
-            text = (f'{mono:.3f} [u]nits:{self.opts.units} [i]tvl={self.opts.report_interval}'
+            ## mono = time.monotonic() - self.mono_start
+            text = (f'{self.dbinfo} [u]nits:{self.opts.units} [i]tvl={self.opts.report_interval}'
                     + f' [d]eltas:{delta} zeros={zeros} Dump [e]dit ?=help [q]uit')
-                    # + f' state={self.history.state}')
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
@@ -450,13 +450,29 @@ class MemFo:
         self.spin.show_help_body(self.win)
         self.win.render()
 
-
     def render_normal_report(self):
         """ TBD"""
         self.win.clear()
         for row in self.report_rows.values():
             if row.key.startswith('_time'):
                 pass
+            elif row.key.startswith('_mono'):
+                live_idx = None
+                attr = curses.A_BOLD
+                if self.slicer.tack:
+                    #  ....    1m50s      1m55s      1m59s 10/24 16:32:10
+                    #                          ^
+                    #  looking for start of "live" col (the ^ position)
+                    pattern = r'(\s+\S+\s+\S+\s+\S+\s*)$'
+                    match = re.search(pattern, row.text)
+                    if match:
+                        live_idx = match.start(1)
+                if live_idx is None:
+                    self.win.add_header(row.text, attr=attr)
+                else:
+                    self.win.add_header(row.text[:live_idx], attr=attr|curses.A_REVERSE)
+                    self.win.add_header(row.text[live_idx:], attr=attr, resume=True)
+
             elif row.key.startswith('_'):
                 self.win.add_header(row.text, attr=curses.A_BOLD)
             elif row.key in self.freezes:
@@ -545,6 +561,10 @@ class MemFo:
                 elif self.edit_mode:
                     self.edit_mode = False
                 set_page()
+            
+            elif key in (ord('['), ord('{'), ord('<'),
+                            ord(']'), ord('}'), ord('>')):
+                self.slicer.horizontal_moves.append(chr(key))
 
             elif key in (ord('C'),):
                 # undocumented
