@@ -113,7 +113,6 @@ class TimeSlicer:
         self.stable_sample_mono = None
 
         # Slicing State (Persisted)
-        self.last_complete_sample_index = 0
         self.slices: List[Dict[str, Any]] = []
 
     def get_var_slices(self, max_col_cnt: int) -> List[Dict[str, Any]]:
@@ -147,38 +146,30 @@ class TimeSlicer:
         is always the "live" current sample. Historical columns only change when
         a full bucket completes (shift) or the screen size changes (regenerate).
         """
+        def get_last_hist_idx():
+            nonlocal self, interval_secs
+            if len(self.history.infos) < 2:
+                return 0
+            last_mono = self.history.infos[1]['_mono']
+            last_report_mono = last_mono - last_mono % interval_secs
+            last_hist_idx = 1 + (last_mono-last_report_mono) // self.history.info_secs
+            return last_hist_idx
+
+
         infos = self.history.infos # short hand
         total_history_count = len(infos)
         # number of samples in interval
         interval_samples = interval_secs // self.history.info_secs
-        if is_mode_switch:
-            self.stable_sample_mono = None
 
         # 1. Guard Check ... if there is only one column return it
-        if total_history_count < interval_samples:
-            self.last_complete_sample_index = 0
-
+        if total_history_count < 2:
             # --- FINAL SLICE PREPARATION ---
             return [infos[0]] if infos else []
-
-        # find the stable point sample of the last "fixed" column (i.e., the one
-        # before the current column)
-        stable_sample_idx = len(infos)-1
-        if self.stable_sample_mono is not None:
-            for idx, info in enumerate(infos):
-                if self.stable_sample_mono >= info['_mono']:
-                    stable_sample_idx = idx
-                    break
-        # shift stable_sample_idx to newest short of current
-        stable_sample_idx = stable_sample_idx % interval_samples
-        if stable_sample_idx == 0:
-            stable_sample_idx += interval_samples
-        self.stable_sample_mono = infos[stable_sample_idx]['_mono']
 
         # create the slices going backwards from our stable index
         # until we run out or need no more
         slices = []
-        current_idx = stable_sample_idx
+        current_idx = get_last_hist_idx()
         for _ in range(max_col_cnt-1):
             if current_idx >= total_history_count or current_idx < 0:
                 break
