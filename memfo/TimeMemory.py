@@ -22,78 +22,84 @@ class TimeMemory:
     COMPRESSION_MULTIPLIERS: List[int] = [5, 3, 2, 2, 5, 3, 2, 2, 4, 3, 2, 2, 2, 2]
     RETENTION_SEC: int = 24 * 60 * 60
 
-    def __init__(self, sample_secs: int):
+    def __init__(self, initial_sample_secs: int=1):
         # List of info objects, ALWAYS running backwards: [Newest Info, ..., Oldest Info]
         self.infos: List[Dict[str, Any]] = []
-        self.info_secs = sample_secs
+        self.info_secs = initial_sample_secs
         self.info_base_num: int = 0
         self.comp_idx: int = 0
         self.prev_info_mono = 0
+        self.state = 'n/a'
 
-    def _get_info_nums(self, info: Dict[str, Any]) -> tuple[int, int]:
-        """Calculates the discrete sample and bucket indices for a given info object."""
-        # Note: info['_mono'] is assumed to be a high-resolution monotonic time
-        info_sample_num = info['_mono']
-        info_num = info_sample_num // self.info_secs
-        return info_sample_num, info_num
-
-    def append_info(self, info: Dict[str, Any]):
+    def append_info(self, info: Dict[str, Any], force_compression=False):
         """
         Adds the info object, filling gaps with synthetic data and managing
         fixed-size, adaptively compressed memory.
+
+        Returns whether compressed
         """
-        self.prev_info_mono, new_info_num = self._get_info_nums(info)
+        def get_fake_info(info, mono):
+            fake_info = copy.deepcopy(info)
+            fake_info['_mono'] = mono
+            return fake_info
 
         # --- 1. Initialization (First Run) ---
         if not self.infos:
             self.infos.append(info)
-            self.info_base_num = new_info_num
             self.comp_idx = 0
-            return
+            self.state = 'init'
+            return False # not compressed
 
-        current_top_num = self.info_base_num + len(self.infos) - 1
+        # --- 2. In past (should not happen)
+        this_mono = info['_mono']
+        top_mono = self.infos[0]['_mono']
+        if this_mono < top_mono:
+            self.state = 'in-past'
+            return False # not compressed
 
-        # --- 2. Update/Overwrite Check (Same bucket) ---
-        if new_info_num == current_top_num:
+        # --- 3. Update/Overwrite Check (Same bucket) ---
+        if this_mono == top_mono:
             self.infos[0] = info
-            return
+            self.state = 'reuse'
+            return False # not compressed
 
-        # --- 3. Stale Check (Older data) ---
-        if new_info_num < current_top_num:
-            # print(f"[{time.time():.2f}] Warning: Received stale info_num {new_info_num}. Dropping.")
-            return
+        hole = ''
 
-        # --- 4. Insert New Info and Fill Gaps (new_info_num > current_top_num) ---
-        missing_count = new_info_num - current_top_num - 1
+        # --- 4. Hole Check (fill if needed) ---
+        while this_mono > top_mono + 1:
+            hole = self.state = 'hole-'
+            top_mono += 1 # next missing mono
+            if top_mono % self.info_secs != 0:
+                self.infos[0]['_mono'] = top_mono
+            else:
+                self.append_info(get_fake_info(info, top_mono))
 
-        for i in range(missing_count):
-            missing_num = current_top_num + i + 1
-            synthetic_info = copy.deepcopy(self.infos[0])
-            synthetic_info['_mono'] = int(missing_num * self.info_secs)
-            self.infos.insert(0, synthetic_info)
+        # --- 5. Overwrite situation ---
+        if top_mono % self.info_secs != 0:
+            self.infos[0] = info
+            self.state = f'{hole}reuse'
+            return False # not compressed
 
+        # --- 5. Insert situation (and this_mono == top_mono+1) ---
+        self.state = f'{hole}grow'
         self.infos.insert(0, info)
 
-        # --- 5. History Pruning (Fixed Time Retention) ---
+        # --- 6. History Pruning (Fixed Time Retention) ---
         cutoff_time = info['_mono'] - self.RETENTION_SEC
+        while len(self.infos) > self.MAX_INFOS and self.infos:
+            if self.infos[-1]['_mono'] < cutoff_time:
+                del self.infos[-1]
 
-        while self.infos and self.infos[-1]['_mono'] < cutoff_time:
-            self.infos.pop()
-            self.info_base_num += 1
-
-        # --- 6. Unified Adaptive Compression (Capacity and Spacing) ---
-        if len(self.infos) > self.MAX_INFOS:
+        # --- 7. Unified Adaptive Compression (Capacity and Spacing) ---
+        if len(self.infos) > self.MAX_INFOS or force_compression:
             factor = self.COMPRESSION_MULTIPLIERS[self.comp_idx % len(self.COMPRESSION_MULTIPLIERS)]
-
-            compressed_infos = [self.infos[i] for i in range(0, len(self.infos), factor)]
-
-            old_info_secs = self.info_secs
             self.info_secs *= factor
+            compressed_infos = [info for info in self.infos[1:] if info['_mono'] % self.info_secs == 0]
+            self.infos = self.infos[:1] + compressed_infos
             self.comp_idx += 1
-            self.infos = compressed_infos
+            return True
 
-            old_base_sample_num = self.info_base_num * old_info_secs
-            self.info_base_num = old_base_sample_num // self.info_secs
+        return False # not compressed
 
 
 # --- The TimeSlicer Logic ---

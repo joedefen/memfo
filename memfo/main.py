@@ -39,7 +39,7 @@ def handle_quit_signal():
     If so, it detaches the current tmux client and prevents the Python process from exiting.
     Otherwise, it performs a standard exit.
     """
-    
+
     # 1. Check for TMUX environment variable
     if 'TMUX' not in os.environ:
         # Not in tmux, perform standard exit.
@@ -51,8 +51,8 @@ def handle_quit_signal():
         # Use tmux display-message to get the current session name
         session_name_proc = subprocess.run(
             ['tmux', 'display-message', '-p', '#{session_name}'],
-            capture_output=True, 
-            text=True, 
+            capture_output=True,
+            text=True,
             check=True,
             timeout=1
         )
@@ -61,23 +61,22 @@ def handle_quit_signal():
         if session_name == 'memfo':
             # SUCCESS: We are in the dedicated persistent session.
             print("\nDetaching from persistent 'memfo' session...")
-            
+
             # Execute the tmux detach command.
             # This command will immediately kill the current terminal client,
             # but leave the memfo process running inside the session.
             subprocess.run(['tmux', 'detach'], check=False)
-            
+
             # Since the client terminal is gone, the code below is technically unreachable
             # in that terminal, but we add a final safety measure to prevent the main loop
             # from accidentally executing a self-termination command.
-            
+
             # Raise an exception or break the input loop logic here instead of calling sys.exit()
             raise SystemExit("Tmux client detached successfully.")
 
-        else:
-            # In tmux, but not the persistent "memfo" session (e.g., user's personal session).
-            print(f"Exiting memfo application from session '{session_name}'.")
-            sys.exit(0)
+        # In tmux, but not the persistent "memfo" session (e.g., user's personal session).
+        print(f"Exiting memfo application from session '{session_name}'.")
+        sys.exit(0)
 
     except subprocess.CalledProcessError as e:
         # Tmux command failed (e.g., internal tmux error). Treat as normal exit.
@@ -137,47 +136,67 @@ class MemFo:
     """ TBD """
     singleton = None
     max_value = 999*1000*1000*1000
-    def __init__(self, opts):
+    def __init__(self, args):
+        """
+            - args the choices from the command line
+            - opts are the choices from the command line
+              OR run-time choices
+        """
         assert not MemFo.singleton
+        self.opts = SimpleNamespace(
+            vmalloc_total=args.vmalloc_total,
+            zeros=args.zeros,
+            units=args.units,
+            delta=False,
+            report_interval='Var',
+            dump_report=False,
+            force_compression=False, # undocumented
+        )
 
-        self.sample_secs = 1
-        self.history = TimeMemory(sample_secs=self.sample_secs)
+        self.history = TimeMemory(initial_sample_secs=1)
         self.slicer = TimeSlicer(self.history)
         self.mono_start = time.monotonic()
         self.fh = open('/proc/meminfo', 'r', encoding='utf-8')
-        self.vmalloc_total = opts.vmalloc_total
-        if self.vmalloc_total:
-            MemFo.max_value *= 1000
-        self.zeros = opts.zeros
-        self.config_basename = opts.config
-
-        self.units, self.divisor, self.data_width = opts.units, 0, 0
-        self.delta = False # whether to show deltas
+        self.config_basename = args.config
         self.win = None  # ConsoleWindow
         self.spin = None # Option Spinner
-        self.page = 'normal' # or 'edit' or 'help'
-        self.edit_mode = False # true in when editing
-        self.help_mode = False # true in when in help screen
-        self.report_interval = 'Var'  # column interval
-        self.prev_report_interval_secs = None
-        self.term_width = 0 # how wide is the terminal
+
+        if self.opts.vmalloc_total:
+            MemFo.max_value *= 1000
+
+        # support for opts.units...
+        self.divisor, self.precision = None, None
+
+        # support for opts.zeros
+        self.non_zeros = set() # ever non-zero since program started
+
+        # support for opts.report_interval
+        self.prev_report_interval = None
         self.report_intervals = {'Var': 0, '5s': 5, '15s': 15,
                                 '30s': 30, '1m': 60, '5m': 300,
                                 '15m': 900, '1hr': 3600}
 
+        # window state
+        self.page = 'normal' # or 'edit' or 'help'
+        self.edit_mode = False # true in when editing
+        self.help_mode = False # true in when in help screen
+
+        self.term_width = 0 # how wide is the terminal
         self.key_width = None
         self.data_width = None
         self.report_rows = None # the stuff to display
-        self._set_units()
+
         self.message = ''
         self.message_mono = None
 
-        self.non_zeros = set() # ever non-zero since program started
+        self.target_mono = 1
+
         self.freezes = set()  # fields that are frozen (above the line)
         self.hides = set()    # fields that are hidden
         self.edit_cnt = 0     # number of pending edits
         self.config = None
         self.config_file = None
+        self._set_units()
         self.init_config()
 
     def start_curses(self, line_cnt=200):
@@ -186,22 +205,24 @@ class MemFo:
             return
         self.spin = OptionSpinner()
         self.spin.add_key('units', 'u - memory units',
-                          vals=['KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'], obj=self)
+                        vals=['KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'], obj=self.opts)
         self.spin.add_key('report_interval', 'i - report interval',
-                          vals=list(self.report_intervals.keys()), obj=self)
+                        vals=list(self.report_intervals.keys()), obj=self.opts)
         self.spin.add_key('delta', 'd - show deltas',
-                          vals=[False, True], obj=self)
+                        vals=[False, True], obj=self.opts)
         self.spin.add_key('zeros', 'z - show all zeros lines',
-                          vals=[False, True], obj=self)
+                        vals=[False, True], obj=self.opts)
         self.spin.add_key('dump_report', 'D - dump history stats to /tmp/memfo.csv',
-                          vals=[False, True], obj=self)
+                        vals=[False, True], obj=self.opts)
         self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
-                comments='"*" freezes lines; "-" hides lines', obj=self)
+                comments='"*" freezes lines; "-" hides lines', obj=self.opts)
         self.spin.add_key('help_mode', '? - help screen',
-                          vals=[False, True], obj=self)
- 
+                        vals=[False, True], obj=self.opts)
+
         keys_we_handle =  [ord('*'), ord('-'), ord('r'), ord('R'),
-                            ord('q'), 0x3,
+                            ord('['), ord('{'), ord('<'),
+                            ord(']'), ord('}'), ord('>'),
+                            ord('C'), ord('q'), 0x3,
                             curses.KEY_ENTER, 10] + list(self.spin.keys)
 
         self.win = ConsoleWindow(head_line=True, head_rows=line_cnt,
@@ -244,16 +265,16 @@ class MemFo:
             self.win.stop_curses()
 
     def _set_units(self):
-        self.precision = 1
-        if self.units == 'MB':
+        units, self.precision = self.opts.units, 1
+        if units == 'MB':
             self.divisor = 1000*1000
-        elif self.units == 'MiB':
+        elif units == 'MiB':
             self.divisor = 1024*1024
-        elif self.units == 'GB':
+        elif units == 'GB':
             self.divisor = 1000*1000*1000
-        elif self.units == 'GiB':
+        elif units == 'GiB':
             self.divisor = 1024*1024*1024
-        elif self.units == 'KiB':
+        elif units == 'KiB':
             self.divisor = 1024 # KiB (the original)
             self.precision = 0
         else: # human
@@ -261,8 +282,6 @@ class MemFo:
             self.precision = 0
         self.data_width = 1
         self.data_width = len(self.render(-self.max_value))
-        # if self.units == 'human':
-         #    self.data_width = 1+min(self.data_width, 7)
 
     def render(self, value, sign=''):
         """ Render a value into a string per the current options
@@ -292,15 +311,17 @@ class MemFo:
 
         count = 5000
         rows = {}
-        delta = 'ON' if self.delta else 'off'
-        zeros = 'ON' if self.zeros else 'off'
+        delta = 'ON' if self.opts.delta else 'off'
+        zeros = 'ON' if self.opts.zeros else 'off'
         if self.message and self.message_mono is not None:
             text = f"****  ALERT: {self.message} ****"
             if time.monotonic() - self.message_mono >= 10.0:
                 self.message, self.message_mono = '', None
         elif self.page == 'normal':
-            text = (f'[u]nits:{self.units} [i]tvl={self.report_interval}'
+            mono = time.monotonic() - self.mono_start
+            text = (f'{mono:.3f} [u]nits:{self.opts.units} [i]tvl={self.opts.report_interval}'
                     + f' [d]eltas:{delta} zeros={zeros} Dump [e]dit ?=help [q]uit')
+                    # + f' state={self.history.state}')
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
@@ -316,7 +337,7 @@ class MemFo:
                         text += f' {time_str}'
                 else:
                     val = info[key]
-                    if ii < len(slices)-1 and self.delta:
+                    if ii < len(slices)-1 and self.opts.delta:
                         next_val = slices[ii+1][key]
                         text = self.render(next_val-val, sign=True)
                     else:
@@ -339,7 +360,7 @@ class MemFo:
             mat = re.match(r'^([^:]+):\s*(\d+)\s*(|kB)$', line)
             if mat:
                 key, val, suffix = mat.group(1), int(mat.group(2)), mat.group(3)
-                if key == 'VmallocTotal' and not self.vmalloc_total:
+                if key == 'VmallocTotal' and not self.opts.vmalloc_total:
                     continue
                 val *= 1024 if suffix == 'kB' else 1
                 info[key] = val
@@ -359,7 +380,12 @@ class MemFo:
 
         # 1. READ and APPEND New Data
         info = self._read_info()
-        self.history.append_info(info)
+        if self.opts.force_compression:
+            compressed = self.history.append_info(info, force_compression=True)
+            if compressed:
+                self.opts.force_compression = False
+        else:
+            self.history.append_info(info)
 
         # 2. CALCULATE Screen Constraints
         self.term_width, _ = shutil.get_terminal_size()
@@ -374,21 +400,45 @@ class MemFo:
         max_col_cnt = max(1, cols_width // (1 + self.data_width))
 
         # 3. DETERMINE Interval Mode
-        interval_secs = self.report_intervals.get(self.report_interval, 0)
-        if interval_secs > 0:
-            interval_secs = max(interval_secs, self.history.info_secs)
-        is_mode_switch = bool(self.prev_report_interval_secs != interval_secs)
-        is_var_mode = (self.report_interval == 'Var' or interval_secs == 0)
 
-        self.prev_report_interval_secs = self.report_interval # Update for next loop's check
+        self.legalize_report_interval()
 
-        if is_var_mode:
+        is_mode_switch = bool(self.prev_report_interval != self.opts.report_interval)
+        if self.opts.report_interval == 'Var':
             slices = self.slicer.get_var_slices(max_col_cnt)
         else:
+            interval_secs = self.report_intervals.get(self.opts.report_interval, 0)
             slices = self.slicer.get_fixed_slices(interval_secs,
                         max_col_cnt, is_mode_switch)
 
+        self.prev_report_interval = self.opts.report_interval # Update for next loop's check
+
+
         self.render_slices(slices)
+
+    def legalize_report_interval(self):
+        """ Make the report interval legal.
+                - must be a key in report_intervals
+                - if not legal, - must be least
+                  report_itvl >= sample_itvl
+            Returns whether changed.
+        """
+        opts = self.opts # shorthand
+        old_name = name = opts.report_interval
+        secs = self.report_intervals.get(name, None)
+        if secs is None or secs == 0:
+            opts.report_interval = 'Var'
+            return old_name != opts.report_interval
+        hist_secs = self.history.info_secs
+        if secs >= hist_secs:
+            return old_name != opts.report_interval
+        name = 'Var'
+        names = reversed(self.report_intervals.keys())
+        for n in names:
+            if self.report_intervals[n] < hist_secs:
+                break
+            opts.report_interval = n
+        return old_name != opts.report_interval
 
     def render_help_screen(self):
         """Populate help screen"""
@@ -411,7 +461,7 @@ class MemFo:
                 self.win.add_header(row.text, attr=curses.A_BOLD)
             elif row.key in self.freezes:
                 self.win.add_header(f'{row.text} {row.key}')
-            elif not self.zeros and row.zero:
+            elif not self.opts.zeros and row.zero:
                 continue
             elif row.key not in self.hides:
                 self.win.add_body(f'{row.text} {row.key}')
@@ -455,16 +505,18 @@ class MemFo:
 #               pass
             if key in self.spin.keys:
                 self.spin.do_key(key, self.win)
-                if key in (ord('u'), ):
+                if key in (ord('i'), ):
+                    self.legalize_report_interval()
+                elif key in (ord('u'), ):
                     self._set_units()
                 elif key in (ord('?'), ):
                     set_page()
                 elif key in (ord('e'), ):
                     set_page()
-                elif self.dump_report:
+                elif self.opts.dump_report:
                     self.message = dump_to_csv(self.history.infos)
                     self.message_mono = time.monotonic()
-                    self.dump_report = False
+                    self.opts.dump_report = False
 
             elif key in (ord('*'), ord('-'), ord('r'), ord('R') ):
                 if self.page in ('edit', ):
@@ -494,6 +546,9 @@ class MemFo:
                     self.edit_mode = False
                 set_page()
 
+            elif key in (ord('C'),):
+                # undocumented
+                self.opts.force_compression = True
             elif key in (0x3, ord('q')):
                 handle_quit_signal()
 
@@ -506,13 +561,13 @@ class MemFo:
         else: # normal mode
             self.render_normal_report()
 
-        delta_float = time.monotonic() - self.mono_start
-        delta_int = int(round(delta_float))
-        pause_secs = delta_int - delta_float # how early in secs
-        if delta_int <= self.history.prev_info_mono:
-            pause_secs += 1.0
+        mono_now = time.monotonic() - self.mono_start
+        secs_left = self.target_mono - mono_now
+        if secs_left < 0.2:
+            self.target_mono = int(round(mono_now+1))
+            secs_left = self.target_mono - mono_now
 
-        do_key(self.win.prompt(seconds=max(0.0, pause_secs)))
+        do_key(self.win.prompt(seconds=secs_left))
 
     def loop(self):
         """ The main loop for the program """
@@ -536,10 +591,10 @@ def main():
             help='Show "VmallocTotal" row (which is mostly useless)')
     parser.add_argument('-z', '--zeros', action="store_true",
             help='Show lines with all zeros')
-    opts = parser.parse_args()
+    args = parser.parse_args()
 
     signal.signal(signal.SIGINT, handle_quit_signal)
-    memfo = MemFo(opts)
+    memfo = MemFo(args)
     memfo.loop()
 
 
