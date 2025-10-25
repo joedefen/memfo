@@ -151,6 +151,8 @@ class MemFo:
             report_interval='Var',
             dump_report=False,
             force_compression=False, # undocumented
+            edit_mode=False, # true in when editing
+            help_mode=False, # true in when in help screen
         )
 
         self.dbinfo = ''
@@ -178,9 +180,7 @@ class MemFo:
                                 '15m': 900, '1hr': 3600}
 
         # window state
-        self.page = 'normal' # or 'edit' or 'help'
-        self.edit_mode = False # true in when editing
-        self.help_mode = False # true in when in help screen
+        self.page='normal', # or 'edit' or 'help'
 
         self.term_width = 0 # how wide is the terminal
         self.key_width = None
@@ -224,6 +224,7 @@ class MemFo:
                             ord('['), ord('{'), ord('<'),
                             ord(']'), ord('}'), ord('>'),
                             ord('C'), ord('q'), 0x3,
+                            curses.KEY_LEFT, curses.KEY_RIGHT,
                             curses.KEY_ENTER, 10] + list(self.spin.keys)
 
         self.win = ConsoleWindow(head_line=True, head_rows=line_cnt,
@@ -448,6 +449,10 @@ class MemFo:
                  attr=curses.A_BOLD)
         self.spin.show_help_nav_keys(self.win)
         self.spin.show_help_body(self.win)
+        self.win.put_body('Horizontal scrolling keys:', curses.A_UNDERLINE)
+        self.win.put_body(f'{"< LEFT > RIGHT :":>24} shift left or right one column')
+        self.win.put_body(f'{"{ } :":>24} shift about 12% left or right')
+        self.win.put_body(f'{"[ ] :":>24} shift max left or right')
         self.win.render()
 
     def render_normal_report(self):
@@ -503,11 +508,11 @@ class MemFo:
     def do_window(self):
         """ one loop of window rendering """
         def set_page():
-            if self.help_mode:
+            if self.opts.help_mode:
                 self.page = 'help'
                 self.win.set_pick_mode(False)
                 self.commit_config()
-            elif self.edit_mode:
+            elif self.opts.edit_mode:
                 self.page = 'edit'
                 self.win.set_pick_mode(True)
             else:
@@ -556,15 +561,19 @@ class MemFo:
                             self.win.pick_pos+1, self.win.body.row_cnt-1)
 
             elif key in (curses.KEY_ENTER, 10):
-                if self.help_mode:
-                    self.help_mode = False
-                elif self.edit_mode:
-                    self.edit_mode = False
+                if self.opts.help_mode:
+                    self.opts.help_mode = False
+                elif self.opts.edit_mode:
+                    self.opts.edit_mode = False
                 set_page()
             
             elif key in (ord('['), ord('{'), ord('<'),
                             ord(']'), ord('}'), ord('>')):
                 self.slicer.horizontal_moves.append(chr(key))
+            elif key == curses.KEY_RIGHT:
+                self.slicer.horizontal_moves.append('>')
+            elif key == curses.KEY_LEFT:
+                self.slicer.horizontal_moves.append('<')
 
             elif key in (ord('C'),):
                 # undocumented

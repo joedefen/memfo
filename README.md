@@ -53,7 +53,9 @@ Interaction keys:
 * `D`	- Dump History.	Exports all historical samples to `/tmp/memfo.csv` for analysis.
 * `q` -	Quit. Exits the program.
 * `?`	- Help. Displays the help text.
-
+* `<` `>` - Horizontally, shift columns left/right by 1.
+* `{` `}` - Horizontally, shift columns left/right by about 1/8 of the time span of the data.
+* `[` `]` - Horizontally, shift columns to the beginning / end of the data.
 ## Command Line Options
 You selection of statistics to put in the non-scrolled region and hidden is saved a config file. If you choose another config file on start up, you can have set of statistics per for each use case.
 ```
@@ -69,3 +71,6 @@ options:
   -z, --zeros           Show lines with all zeros
 
 ```
+
+## About Horizontal Scrolling
+After the program has been running a while (and there are enough columns), then horizontal is available.  When you scroll back, only the last column updates, and the first columns will have reverse video times to indicate they are scrolled.  Those columns will be fixed until their data is removed or compressed in a way that affects them.
