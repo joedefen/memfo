@@ -57,14 +57,18 @@ Interaction keys:
 * `{` `}` - Horizontally, shift columns left/right by about 1/8 of the time span of the data.
 * `[` `]` - Horizontally, shift columns to the beginning / end of the data.
 ## Command Line Options
-You selection of statistics to put in the non-scrolled region and hidden is saved a config file. If you choose another config file on start up, you can have set of statistics per for each use case.
+Your selection of statistics to put in the non-scrolled region and hidden is saved a config file. If you choose another config file on start up, you can have set of statistics per for each use case.
 ```
-usage: memfo [-h] [-u {KiB,MB,MiB,GB,GiB,human}] [-c CONFIG] [--vmalloc-total] [-z]
+usage: memfo [-h] [-u {KiB,MB,MiB,GB,GiB,human}] [-i {Var,5s,15s,30s,1m,5m,15m,1hr}] [-d] [-c CONFIG]
+             [--vmalloc-total] [-z]
 
 options:
   -h, --help            show this help message and exit
   -u {KiB,MB,MiB,GB,GiB,human}, --units {KiB,MB,MiB,GB,GiB,human}
                         units of memory [dflt=MiB]
+  -i {Var,5s,15s,30s,1m,5m,15m,1hr}, --report-interval {Var,5s,15s,30s,1m,5m,15m,1hr}
+                        report interval [dflt=Var]
+  -d, --show-deltas     show differences in columns rather than absolute values
   -c CONFIG, --config CONFIG
                         use "{config}.ini" for configuration
   --vmalloc-total       Show "VmallocTotal" row (which is mostly useless)
@@ -73,4 +77,18 @@ options:
 ```
 
 ## About Horizontal Scrolling
-After the program has been running a while (and there are enough columns), then horizontal is available.  When you scroll back, only the last column updates, and the first columns will have reverse video times to indicate they are scrolled.  Those columns will be fixed until their data is removed or compressed in a way that affects them.
+After the program has been running a while (and there are enough columns), then horizontal scrolling is available.  When you scroll left (or back in time), only the last column updates, and the first columns will have reverse video times to indicate they are scrolled.  Those columns will be fixed until their data is removed or compressed in a way that affects them.
+
+## About memfod (i.e., Daemon mode)
+`memfod` runs `memfo` in a named, special `tmux` session aimed to keep that one version of `memfo` running until you shut it down.  This feature requires:
+* that you install `tmux` (e.g., on Debian-based distros, `sudo apt intall tmux`)
+* that you configure `tmux` to outlive logging out (e.g., on `systemd` distros, run `sudo loginctl enable-linger {username}`).
+
+Normally, just use `memfod` but it can take one command argument:
+* `start` - start `memfo` in the special tmux session w/o attaching
+* `stop` - stop `memfo` running the special tmux session
+* `restart` - start `memfo` running the special tmux session after stopping it
+* `status` - show whether `memfo` is running the special tmux session
+* `attach` - attach to the `memfo` running the special tmux session, starting if not running.
+
+You could use `start` to arrange for `memfod` to start on reboot using `cron` if desired.

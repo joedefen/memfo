@@ -136,6 +136,9 @@ class MemFo:
     """ TBD """
     singleton = None
     max_value = 999*1000*1000*1000
+    report_intervals = {'Var': 0, '5s': 5, '15s': 15,
+                            '30s': 30, '1m': 60, '5m': 300,
+                            '15m': 900, '1hr': 3600}
     def __init__(self, args):
         """
             - args the choices from the command line
@@ -147,8 +150,8 @@ class MemFo:
             vmalloc_total=args.vmalloc_total,
             zeros=args.zeros,
             units=args.units,
-            delta=False,
-            report_interval='Var',
+            delta=args.show_deltas,
+            report_interval=args.report_interval,
             dump_report=False,
             force_compression=False, # undocumented
             edit_mode=False, # true in when editing
@@ -175,12 +178,9 @@ class MemFo:
 
         # support for opts.report_interval
         self.prev_report_interval = None
-        self.report_intervals = {'Var': 0, '5s': 5, '15s': 15,
-                                '30s': 30, '1m': 60, '5m': 300,
-                                '15m': 900, '1hr': 3600}
 
         # window state
-        self.page='normal', # or 'edit' or 'help'
+        self.page = 'normal' # or 'edit' or 'help'
 
         self.term_width = 0 # how wide is the terminal
         self.key_width = None
@@ -614,6 +614,10 @@ def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('-u', '--units', choices=('KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'),
             default='MiB', help='units of memory [dflt=MiB]')
+    parser.add_argument('-i', '--report-interval', choices=list(MemFo.report_intervals.keys()),
+            default='MiB', help='report interval [dflt=Var]')
+    parser.add_argument('-d', '--show-deltas', action='store_true',
+            help='show differences in columns rather than absolute values')
     parser.add_argument('-c', '--config', type=str, default='memfo',
             help='use "{config}.ini" for configuration')
     parser.add_argument('--vmalloc-total', action="store_true",
