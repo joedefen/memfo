@@ -3,10 +3,12 @@
 """
 memfo is a viewer for /proc/meminfo
 TODO:
-- add dump-to-csv key and it put current samples into a file.... maybe takes
-   over header line for 10s to show feedback
-- ensure collection is being done during help screen and edit screen (not sure)
-- update README considerably
+- wall clock feature
+  - store both monotime and wall clock time with samples
+  - show (with spinner):
+    - monotime (default, as now)
+    - wall clock (two lines, "Mon 11/02" "09:30:26")
+    - both (three lines)
 """
 # pylint: disable=invalid-name,global-statement
 # pylint: disable=import-outside-toplevel,consider-using-with
@@ -26,6 +28,7 @@ import curses
 import shutil
 import subprocess
 import signal
+import math
 from datetime import datetime
 from types import SimpleNamespace
 from console_window import ConsoleWindow , OptionSpinner
@@ -151,6 +154,7 @@ class MemFo:
             zeros=args.zeros,
             units=args.units,
             delta=args.show_deltas,
+            clock='mono',
             report_interval=args.report_interval,
             dump_report=False,
             force_compression=False, # undocumented
@@ -184,7 +188,8 @@ class MemFo:
 
         self.term_width = 0 # how wide is the terminal
         self.key_width = None
-        self.data_width = None
+        self.data_width = None # based on units
+        self.slice_width = None # based on units and clock mode
         self.report_rows = None # the stuff to display
 
         self.message = ''
@@ -197,7 +202,8 @@ class MemFo:
         self.edit_cnt = 0     # number of pending edits
         self.config = None
         self.config_file = None
-        self._set_units()
+        self.dead_width = None
+        self._set_widths()
         self.init_config()
 
     def start_curses(self, line_cnt=200):
@@ -213,6 +219,8 @@ class MemFo:
                         vals=[False, True], obj=self.opts)
         self.spin.add_key('zeros', 'z - show all zeros lines',
                         vals=[False, True], obj=self.opts)
+        self.spin.add_key('clock', 'c - time style',
+                        vals=['mono', 'wall', 'both'], obj=self.opts)
         self.spin.add_key('dump_report', 'D - dump history stats to /tmp/memfo.csv',
                         vals=[False, True], obj=self.opts)
         self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
@@ -266,7 +274,7 @@ class MemFo:
         if self.win:
             self.win.stop_curses()
 
-    def _set_units(self):
+    def _set_widths(self):
         units, self.precision = self.opts.units, 1
         if units == 'MB':
             self.divisor = 1000*1000
@@ -282,8 +290,13 @@ class MemFo:
         else: # human
             self.divisor = 0 # human
             self.precision = 0
-        self.data_width = 1
+        self.data_width, self.slice_width = 1, 1
         self.data_width = len(self.render(-self.max_value))
+        if self.opts.clock == 'mono':
+            self.slice_width = max(self.data_width, len('300d23h'))
+        else:
+            self.slice_width = max(self.data_width, len('Mon 11/30'))
+
 
     def render(self, value, sign=''):
         """ Render a value into a string per the current options
@@ -294,13 +307,13 @@ class MemFo:
             string = human(value)
             if sign and string[0] != '-':
                 string = f'+{string}'
-            rv = f'{human(value):>{self.data_width}}'
+            rv = f'{human(value):>{self.slice_width}}'
         else:
             value = round(value/self.divisor, self.precision)
             if self.precision:
-                rv = f'{value:{sign}{self.data_width},.{self.precision}f}'
+                rv = f'{value:{sign}{self.slice_width},.{self.precision}f}'
             else:
-                rv = f'{int(value):{sign}{self.data_width},d}'
+                rv = f'{int(value):{sign}{self.slice_width},d}'
         return rv
 
     def render_slices(self, slices):
@@ -322,20 +335,35 @@ class MemFo:
         elif self.page == 'normal':
             ## mono = time.monotonic() - self.mono_start
             text = (f'{self.dbinfo} [u]nits:{self.opts.units} [i]tvl={self.opts.report_interval}'
-                    + f' [d]eltas:{delta} zeros={zeros} Dump [e]dit ?=help [q]uit')
+                    + f' [d]eltas:{delta} zeros={zeros} Dump [c]lock [e]dit ?=help [q]uit')
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
+        
+        width = self.slice_width
+        self.dead_width = (len(slices)-1)*(width+1) - 1
+
         add_row(key='_lead', text=text)
 
         for ii, info in enumerate(slices):
             for key in list(info.keys())[:count]:
+                text, text0, text1, text2 = None, None, None, None
                 if key == '_mono':
-                    ago = f'{ago_str(info["_mono"])}'
-                    text = f'{ago:>{self.data_width}}'
-                    if ii == len(slices)-1:
-                        time_str = datetime.now().strftime("%m/%d %H:%M:%S")
-                        text += f' {time_str}'
+                    clock = self.opts.clock
+                    dt_object = datetime.fromtimestamp(info['_time'])
+                    time_str = dt_object.strftime("%a %m/%d %H:%M:%S")
+                    if clock in ('mono', 'both'):
+                        ago = f'{ago_str(info["_mono"])}'
+                        text0 = f'{ago:>{width}}'
+                    if clock in ('mono', ):
+                        if ii == len(slices)-1:
+                            string = time_str.split(maxsplit=1)[1]
+                            text0 += f' {string}'
+                    if clock in ('wall', 'both'):
+                        top, bot = time_str.rsplit(maxsplit=1)
+                        text1 = f'{top:>{width}}'
+                        text2 = f'{bot:>{width}}'
+
                 else:
                     val = info[key]
                     if ii < len(slices)-1 and self.opts.delta:
@@ -344,19 +372,35 @@ class MemFo:
                     else:
                         text = self.render(val)
                 # now add the text of the file to the text of the line
-                if key in rows:
-                    rows[key].text += ' ' + text
-                elif key.startswith('_') or key in self.non_zeros:
-                    add_row(key, text)
+                if ii == 0:
+                    if key.startswith('_mono'):
+                        if text0:
+                            add_row('_mono0', text0)
+                        if text1:
+                            add_row('_mono1', text1)
+                            add_row('_mono2', text2)
+                    elif key.startswith('_') or key in self.non_zeros:
+                        add_row(key, text)
+                    else:
+                        peak = max([info[key] for info in slices])
+                        add_row(key, text, zero=bool(peak==0))
                 else:
-                    peak = max([info[key] for info in slices])
-                    add_row(key, text, zero=bool(peak==0))
+                    if text0:
+                        rows['_mono0'].text += ' ' + text0
+                    if text1:
+                        rows['_mono1'].text += ' ' + text1
+                        rows['_mono2'].text += ' ' + text2
+                    if text:
+                        if key in rows:
+                            rows[key].text += ' ' + text
+
         self.report_rows = rows
 
     def _read_info(self):
         self.fh.seek(0)
+        fraction, _ = math.modf(self.mono_start)
         info = {'_mono': int(round(time.monotonic()-self.mono_start)),
-                '_time': time.time()}
+                '_time': int(round(time.time()-fraction))}
         for line in self.fh:
             mat = re.match(r'^([^:]+):\s*(\d+)\s*(|kB)$', line)
             if mat:
@@ -398,7 +442,7 @@ class MemFo:
             cols_width -= 4
 
         # Maximum number of columns that can physically fit on the screen
-        max_col_cnt = max(1, cols_width // (1 + self.data_width))
+        max_col_cnt = max(1, cols_width // (1 + self.slice_width))
 
         # 3. DETERMINE Interval Mode
 
@@ -462,21 +506,13 @@ class MemFo:
             if row.key.startswith('_time'):
                 pass
             elif row.key.startswith('_mono'):
-                live_idx = None
                 attr = curses.A_BOLD
                 if self.slicer.tack:
-                    #  ....    1m50s      1m55s      1m59s 10/24 16:32:10
-                    #                          ^
-                    #  looking for start of "live" col (the ^ position)
-                    pattern = r'(\s+\S+\s+\S+\s+\S+\s*)$'
-                    match = re.search(pattern, row.text)
-                    if match:
-                        live_idx = match.start(1)
-                if live_idx is None:
-                    self.win.add_header(row.text, attr=attr)
+                    wid = self.dead_width
+                    self.win.add_header(row.text[:wid], attr=attr|curses.A_REVERSE)
+                    self.win.add_header(row.text[wid:], attr=attr, resume=True)
                 else:
-                    self.win.add_header(row.text[:live_idx], attr=attr|curses.A_REVERSE)
-                    self.win.add_header(row.text[live_idx:], attr=attr, resume=True)
+                    self.win.add_header(row.text, attr=attr)
 
             elif row.key.startswith('_'):
                 self.win.add_header(row.text, attr=curses.A_BOLD)
@@ -529,7 +565,9 @@ class MemFo:
                 if key in (ord('i'), ):
                     self.legalize_report_interval()
                 elif key in (ord('u'), ):
-                    self._set_units()
+                    self._set_widths()
+                elif key in (ord('c'), ):
+                    self._set_widths()
                 elif key in (ord('?'), ):
                     set_page()
                 elif key in (ord('e'), ):

@@ -5,15 +5,16 @@
 
 # memfo: Memory Footprint Observer
 
-A highly efficient, real-time Linux memory monitoring tool built in Python.
+An efficient, real-time Linux memory monitoring tool built in Python.
 
-memfo provides a low-overhead, stable, and highly configurable view of your system's /proc/meminfo data, designed specifically for long-term monitoring and performance debugging.
+`memfo` provides a low-overhead, stable, and highly customizable view of your system's `/proc/meminfo` data, designed for both short-term and long-term monitoring and performance debugging.
 
 ## Features at a Glance
 
-`memfo` is a viewer for `/proc/meminfo` that shows meminfo:
+`memfo` is a viewer for `/proc/meminfo` that shows its data:
 * as a continuously updated display of current and past values,
-* with numbers represented in chosen units,
+* with numbers represented in chosen units as absolute or delta values,
+* in chosen time intervals,
 * with selected fields at the top in the frozen section of the display,
 * with the ability to hide certain fields, and
 * more.
@@ -29,7 +30,7 @@ Additionally, `memfod` is a utility script that starts `memfo` in a `tmux` sessi
 
 ## Example memfo Output
 ```
-[u]nits:MiB [i]tvl=15s [d]eltas:off zeros=off Dump [e]dit ?=help
+[u]nits:MiB [i]tvl=15s [d]eltas:off zeros=off Dump [c]lock [e]dit ?=help
         0s        15s        30s        35s 10/20 22:44:08
    7,813.4    7,813.4    7,813.4    7,813.4 MemTotal
    1,344.1    1,318.9    1,306.6    1,335.2 MemAvailable
@@ -51,6 +52,7 @@ Interaction keys:
 * `z`	- Zeros control. Toggles display of stat lines where the value is zero (helps focus on active metrics).
 * `e` - Edit Mode.	Allows nailing to top or hiding specific memory fields.
 * `D`	- Dump History.	Exports all historical samples to `/tmp/memfo.csv` for analysis.
+* `c`	- clock mode.	Shows clock as monotonic time since start of run, wall clock, or both.
 * `q` -	Quit. Exits the program.
 * `?`	- Help. Displays the help text.
 * `<` `>` - Horizontally, shift columns left/right by 1.
