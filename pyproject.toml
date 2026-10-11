@@ -4,14 +4,14 @@ build-backend = "flit_core.buildapi"
 
 [project]
 name = "memfo"
-version = "2.0.5"
+version = "2.0.6"
 description = "Display Tool for /proc/meminfo"
 authors = [
     { name = "Joe Defen", email = "joedef@duck.com" }
 ]
 readme = "README.md"
 license = { text = "MIT" }
-requires-python = ">=3.8"
+requires-python = ">=3.11"
 keywords = ["meminfo", "/proc/meminfo", "RAM", "memory statistics"]
 classifiers = [
     "Programming Language :: Python :: 3",

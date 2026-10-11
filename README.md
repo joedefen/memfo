@@ -1,6 +1,6 @@
 >**Quick Start**
->* **On python 3.11+, install with**: `pipx upgraded memfo || pipx install memfo`
->* **On python 3.8 to 3.10, install with**: `pip install --upgrade --user memfo`
+>* **Requires Python 3.11+**.
+>* **Install with**: `pipx install memfo` (to update: `pipx upgrade memfo`).
 >* **After install, run**: `memfo` and enter `?` for help.
 
 # memfo: Memory Footprint Observer

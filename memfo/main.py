@@ -242,7 +242,7 @@ class MemFo:
     def init_config(self):
         """ Get the configuration ... create if missing. """
         self.config_file = os.path.expanduser(
-            '~/.config/memfo/{self.config_basename}.ini')
+            f'~/.config/memfo/{self.config_basename}.ini')
         if not os.path.isfile(self.config_file):
             self.edit_cnt = 1 # make it "dirty"
             self.commit_config(freezes='MemTotal MemAvailable'.split(),
@@ -653,7 +653,7 @@ def main():
     parser.add_argument('-u', '--units', choices=('KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'),
             default='MiB', help='units of memory [dflt=MiB]')
     parser.add_argument('-i', '--report-interval', choices=list(MemFo.report_intervals.keys()),
-            default='MiB', help='report interval [dflt=Var]')
+            default='Var', help='report interval [dflt=Var]')
     parser.add_argument('-d', '--show-deltas', action='store_true',
             help='show differences in columns rather than absolute values')
     parser.add_argument('-c', '--config', type=str, default='memfo',
