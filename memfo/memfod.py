@@ -99,7 +99,7 @@ case "$1" in
         echo "Restarting ${DAEMON}..."
         d_stop
         sleep 2
-        d_start_or_attach
+        d_attach
         ;;
     stat|status)
         if is_pane_running_daemon; then

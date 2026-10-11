@@ -1,7 +1,7 @@
 """ For dumping data to .csv """
 
 import csv
-from datetime import datetime
+from datetime import datetime, timezone
 
 def dump_to_csv(infos):
     """
@@ -33,7 +33,7 @@ def dump_to_csv(infos):
         for key in data_keys:
             value = sample.get(key, 0)
             if key == '_time':
-                value = datetime.utcfromtimestamp(value).isoformat()
+                value = datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
             row.append(value) # Use .get() for safety
         data_rows.append(row)
 

@@ -36,11 +36,14 @@ from memfo.TimeMemory import TimeMemory, TimeSlicer
 from memfo.dumper import dump_to_csv
 
 ##############################################################################
-def handle_quit_signal():
+def handle_quit_signal(signum=None, frame=None):
     """
     Checks if memfo is running inside the dedicated persistent 'memfo' tmux session.
     If so, it detaches the current tmux client and prevents the Python process from exiting.
     Otherwise, it performs a standard exit.
+
+    Accepts optional (signum, frame) so it can also be used directly as a
+    SIGINT handler; the signal machinery invokes handlers with two arguments.
     """
 
     # 1. Check for TMUX environment variable
@@ -307,7 +310,7 @@ class MemFo:
             string = human(value)
             if sign and string[0] != '-':
                 string = f'+{string}'
-            rv = f'{human(value):>{self.slice_width}}'
+            rv = f'{string:>{self.slice_width}}'
         else:
             value = round(value/self.divisor, self.precision)
             if self.precision:
@@ -347,6 +350,8 @@ class MemFo:
 
         for ii, info in enumerate(slices):
             for key in list(info.keys())[:count]:
+                if key == '_time':
+                    continue
                 text, text0, text1, text2 = None, None, None, None
                 if key == '_mono':
                     clock = self.opts.clock
@@ -477,9 +482,12 @@ class MemFo:
         hist_secs = self.history.info_secs
         if secs >= hist_secs:
             return old_name != opts.report_interval
-        name = 'Var'
-        names = reversed(self.report_intervals.keys())
-        for n in names:
+        # Default to 'Var' (always legal) so that, if no fixed interval is
+        # large enough for the (possibly compressed) sample interval, we do
+        # not leave an illegal interval in place (which crashes the slicer
+        # with a zero idx_step_by).
+        opts.report_interval = 'Var'
+        for n in reversed(self.report_intervals.keys()):
             if self.report_intervals[n] < hist_secs:
                 break
             opts.report_interval = n
@@ -579,24 +587,30 @@ class MemFo:
 
             elif key in (ord('*'), ord('-'), ord('r'), ord('R') ):
                 if self.page in ('edit', ):
-                    row = list(self.report_rows.values())[self.win.pick_pos+3]
-                    param = row.key
-                    if key == ord('*'):
-                        self.hides.discard(param)
-                        self.freezes.add(param)
-                    elif key == ord('-'):
-                        self.freezes.discard(param)
-                        self.hides.add(param)
-                    elif key == ord('r'):
-                        self.hides.discard(param)
-                        self.freezes.discard(param)
-                    elif key == ord('R'):
-                        self.hides, self.freezes = set(), set()
-                    self.edit_cnt += 1
-                    if key in (ord('*'), ord('-'), ord('r') ):
-                        self.win.last_pick_pos = self.win.pick_pos
-                        self.win.pick_pos = min(
-                            self.win.pick_pos+1, self.win.body.row_cnt-1)
+                    # Map the picked body row to its data row. Do NOT assume a
+                    # fixed number of header rows: the count varies with the
+                    # clock mode (_mono0..2 appear only for mono/both).
+                    data_rows = [r for r in self.report_rows.values()
+                                 if not r.key.startswith('_')]
+                    if 0 <= self.win.pick_pos < len(data_rows):
+                        row = data_rows[self.win.pick_pos]
+                        param = row.key
+                        if key == ord('*'):
+                            self.hides.discard(param)
+                            self.freezes.add(param)
+                        elif key == ord('-'):
+                            self.freezes.discard(param)
+                            self.hides.add(param)
+                        elif key == ord('r'):
+                            self.hides.discard(param)
+                            self.freezes.discard(param)
+                        elif key == ord('R'):
+                            self.hides, self.freezes = set(), set()
+                        self.edit_cnt += 1
+                        if key in (ord('*'), ord('-'), ord('r') ):
+                            self.win.last_pick_pos = self.win.pick_pos
+                            self.win.pick_pos = min(
+                                self.win.pick_pos+1, self.win.body.row_cnt-1)
 
             elif key in (curses.KEY_ENTER, 10):
                 if self.opts.help_mode:
