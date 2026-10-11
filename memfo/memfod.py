@@ -114,6 +114,16 @@ case "$1" in
     attach|"") # Default action: attach (which starts if needed)
         d_attach
         ;;
+    help|-h|--help)
+        echo "Usage: $0 {start|stop|restart|status|attach}"
+        echo
+        echo "  start            start ${DAEMON} in the persistent tmux session"
+        echo "  attach (default) start if needed, then attach to the session"
+        echo "  stop             stop ${DAEMON} and kill the session"
+        echo "  restart          stop, then start and attach"
+        echo "  status           report whether ${DAEMON} is running"
+        exit 0
+        ;;
     *)
         echo "Usage: $0 {start|stop|restart|status|attach}" >&2
         exit 1

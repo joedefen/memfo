@@ -7,10 +7,11 @@ def dump_to_csv(infos):
     """
     Dumps all historical sample data (self.infos) to /tmp/memfo.csv.
 
-    The CSV format uses the following columns:
-    1. Wall Clock Timestamp (ISO Format)
-    2. Report relative time (int)
-    3. All other keys from the sample dictionary (data assumed to be in Bytes/B)
+    Rows are written oldest-first. Columns follow the key order of each
+    sample dict:
+    * ``_mono`` - seconds since memfo started (int)
+    * ``_time`` - wall-clock timestamp as ISO-8601 UTC
+    * every other key - the raw memory value in bytes
     """
 
     filename = "/tmp/memfo.csv"

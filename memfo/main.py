@@ -28,7 +28,6 @@ import curses
 import shutil
 import subprocess
 import signal
-import math
 from datetime import datetime
 from types import SimpleNamespace
 from console_window import ConsoleWindow , OptionSpinner
@@ -322,7 +321,6 @@ class MemFo:
     def render_slices(self, slices):
         """ TBD """
         def add_row(key, text, zero=False):
-            nonlocal rows
             rows[key] = SimpleNamespace(key=key, zero=zero, text=text)
             if not zero:
                 self.non_zeros.add(key)
@@ -403,9 +401,10 @@ class MemFo:
 
     def _read_info(self):
         self.fh.seek(0)
-        fraction, _ = math.modf(self.mono_start)
+        # _mono is integer seconds since start; _time is the matching wall
+        # clock rounded to the same whole second.
         info = {'_mono': int(round(time.monotonic()-self.mono_start)),
-                '_time': int(round(time.time()-fraction))}
+                '_time': int(round(time.time()))}
         for line in self.fh:
             mat = re.match(r'^([^:]+):\s*(\d+)\s*(|kB)$', line)
             if mat:
@@ -511,9 +510,7 @@ class MemFo:
         """ TBD"""
         self.win.clear()
         for row in self.report_rows.values():
-            if row.key.startswith('_time'):
-                pass
-            elif row.key.startswith('_mono'):
+            if row.key.startswith('_mono'):
                 attr = curses.A_BOLD
                 if self.slicer.tack:
                     wid = self.dead_width
@@ -678,6 +675,10 @@ def main():
             help='Show lines with all zeros')
     args = parser.parse_args()
 
+    # console_window installs its own SIGINT handler once curses starts
+    # (ctrl_c_terminates=False -> Ctrl-C arrives as key 0x3 via do_key). This
+    # registration only covers the brief pre-curses window; restore_ctrl_c()
+    # supersedes it, so it is intentionally redundant and harmless.
     signal.signal(signal.SIGINT, handle_quit_signal)
     memfo = MemFo(args)
     memfo.loop()

@@ -35,74 +35,95 @@ class TimeMemory:
 
     def append_info(self, info: Dict[str, Any], force_compression=False):
         """
-        Adds the info object, filling gaps with synthetic data and managing
-        fixed-size, adaptively compressed memory.
+        Add one sample to the history buffer.
 
-        Returns whether compressed
+        Invariants maintained by this method (see tests/test_timememory.py):
+        * ``infos`` runs newest-first.
+        * Every entry except ``infos[0]`` sits on the grid of ``info_secs``
+          boundaries; spacing between them is exactly ``info_secs``.
+        * ``infos[0]`` is the *live* entry: until a sample lands on the next
+          grid boundary its timestamp simply advances, so the display always
+          ends on "now".
+        * ``len(infos) <= MAX_INFOS``, with the grid coarsened as needed.
+
+        Returns True if a compression step ran, else False.
         """
         def get_fake_info(info, mono):
             fake_info = copy.copy(info)
             fake_info['_mono'] = mono
             return fake_info
 
-        # --- 1. Initialization (First Run) ---
+        # --- 1. First sample ---
         if not self.infos:
             self.infos.append(info)
             self.comp_idx = 0
             self.state = 'init'
-            return False # not compressed
+            return False
 
-        # --- 2. In past (should not happen)
         this_mono = info['_mono']
         top_mono = self.infos[0]['_mono']
+
+        # --- 2. Stale / out-of-order sample: ignore ---
         if this_mono < top_mono:
             self.state = 'in-past'
-            return False # not compressed
+            return False
 
-        # --- 3. Update/Overwrite Check (Same bucket) ---
+        # --- 3. Same second as the live entry: overwrite it ---
         if this_mono == top_mono:
             self.infos[0] = info
             self.state = 'reuse'
-            return False # not compressed
+            return False
 
-        hole = ''
-
-        # --- 4. Hole Check (fill if needed) ---
+        # --- 4. Advance the live entry to the new sample time, freezing a
+        #        permanent entry at each grid boundary we cross. ---
+        filled_hole = False
         while this_mono > top_mono + 1:
-            hole = self.state = 'hole-'
+            filled_hole = True
             top_mono += 1 # next missing mono
             if top_mono % self.info_secs != 0:
+                # Not a boundary: just move the live entry's clock forward.
                 self.infos[0]['_mono'] = top_mono
             else:
+                # Boundary: freeze a (gap-filled) entry at this grid position.
                 self.append_info(get_fake_info(info, top_mono))
 
-        # --- 5. Overwrite situation ---
+        # --- 5. Land the sample ---
         if top_mono % self.info_secs != 0:
+            # Off-grid: the live entry simply becomes the newest sample.
             self.infos[0] = info
-            self.state = f'{hole}reuse'
-            return False # not compressed
+            self.state = 'hole-reuse' if filled_hole else 'reuse'
+            return False
 
-        # --- 5. Insert situation (and this_mono == top_mono+1) ---
-        self.state = f'{hole}grow'
+        # On-grid: start a new permanent entry.
+        self.state = 'hole-grow' if filled_hole else 'grow'
         self.infos.insert(0, info)
 
-        # --- 6. History Pruning (Fixed Time Retention) ---
-        cutoff_time = info['_mono'] - self.RETENTION_SEC
+        # --- 6. Prune entries older than the retention window ---
+        self._prune(info['_mono'])
+
+        # --- 7. Coarsen the grid if we are over capacity (or forced) ---
+        return self._maybe_compress(force_compression)
+
+    def _prune(self, newest_mono):
+        """Drop entries older than the retention window (only while over cap)."""
+        cutoff_time = newest_mono - self.RETENTION_SEC
         while len(self.infos) > self.MAX_INFOS and self.infos:
             if self.infos[-1]['_mono'] >= cutoff_time:
                 break
             del self.infos[-1]
 
-        # --- 7. Unified Adaptive Compression (Capacity and Spacing) ---
-        if len(self.infos) > self.MAX_INFOS or force_compression:
-            factor = self.COMPRESSION_MULTIPLIERS[self.comp_idx % len(self.COMPRESSION_MULTIPLIERS)]
-            self.info_secs *= factor
-            compressed_infos = [info for info in self.infos[1:] if info['_mono'] % self.info_secs == 0]
-            self.infos = self.infos[:1] + compressed_infos
-            self.comp_idx += 1
-            return True
-
-        return False # not compressed
+    def _maybe_compress(self, force_compression):
+        """Coarsen the sample grid when over capacity; True if it compressed."""
+        if len(self.infos) <= self.MAX_INFOS and not force_compression:
+            return False
+        factor = self.COMPRESSION_MULTIPLIERS[
+            self.comp_idx % len(self.COMPRESSION_MULTIPLIERS)]
+        self.info_secs *= factor
+        compressed_infos = [info for info in self.infos[1:]
+                            if info['_mono'] % self.info_secs == 0]
+        self.infos = self.infos[:1] + compressed_infos
+        self.comp_idx += 1
+        return True
 
 
 # --- The TimeSlicer Logic ---
@@ -159,7 +180,6 @@ class TimeSlicer:
 
 
         def get_right_col():
-            nonlocal self, interval_secs
             right = get_col_ns()
             if len(self.history.infos) < 2:
                 return right
@@ -172,7 +192,6 @@ class TimeSlicer:
             # .idx_step_by: infos per report interval
             # .right_upper: greatest mono right col
             # .right_lower: least mono right col
-            nonlocal self, interval_secs, max_col_cnt
             ns = SimpleNamespace(right_upper=get_right_col())
             info_secs = self.history.info_secs # shorthand
             ns.idx_step_by = interval_secs//info_secs
@@ -187,7 +206,6 @@ class TimeSlicer:
             return ns
 
         def legal_tack(tack, range_ns):
-            nonlocal self, interval_secs
             upper_mono = range_ns.right_upper.mono
             if tack.mono >= upper_mono:
                 return copy.copy(range_ns.right_upper)
@@ -200,8 +218,6 @@ class TimeSlicer:
             return get_col_ns(idx=info_idx, mono=self.history.infos[info_idx]['_mono'])
 
         def apply_pending_moves(range_ns):
-        # tack = range_ns.right_upper
-            nonlocal interval_secs
             tack = copy.copy(self.tack)
             if not tack:
                 tack = copy.copy(range_ns.right_upper)
