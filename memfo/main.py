@@ -331,20 +331,23 @@ class MemFo:
         zeros = 'ON' if self.opts.zeros else 'off'
         if self.message and self.message_mono is not None:
             text = f"****  ALERT: {self.message} ****"
+            key = '_lead'
             if time.monotonic() - self.message_mono >= 10.0:
                 self.message, self.message_mono = '', None
         elif self.page == 'normal':
             ## mono = time.monotonic() - self.mono_start
             text = (f'{self.dbinfo} [u]nits:{self.opts.units} [i]tvl={self.opts.report_interval}'
-                    + f' [d]eltas:{delta} zeros={zeros} Dump [c]lock [e]dit ?=help [q]uit')
+                    + f' [d]eltas:{delta} zeros={zeros} Dump [c]lock [e]dit ?:help [q]uit')
+            key = '_help'
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
-                    + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?=help')
+                    + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?:help')
+            key = '_help'
         
         width = self.slice_width
         self.dead_width = (len(slices)-1)*(width+1) - 1
 
-        add_row(key='_lead', text=text)
+        add_row(key=key, text=text)
 
         for ii, info in enumerate(slices):
             for key in list(info.keys())[:count]:
@@ -510,7 +513,10 @@ class MemFo:
         """ TBD"""
         self.win.clear()
         for row in self.report_rows.values():
-            if row.key.startswith('_mono'):
+            if row.key == '_help':
+                self.win.add_fancy_header(row.text, mode='Underline',
+                                          line_attr=curses.A_DIM)
+            elif row.key.startswith('_mono'):
                 attr = curses.A_BOLD
                 if self.slicer.tack:
                     wid = self.dead_width
@@ -536,7 +542,10 @@ class MemFo:
 
         self.win.clear()
         for row in self.report_rows.values():
-            if row.key.startswith('_'):
+            if row.key == '_help':
+                self.win.add_fancy_header(row.text, mode='Underline',
+                                          line_attr=curses.A_DIM)
+            elif row.key.startswith('_'):
                 self.win.add_header(row.text)
             elif row.key in self.freezes:
                 self.win.add_body(text(row, '***'))

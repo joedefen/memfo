@@ -1,10 +1,61 @@
 #!/usr/bin/env python3
 # runner.py (at project root)
 #  - use for debugging ... otherwise, it is very messy with flit
+#
+# This script always runs under the project's virtual environment.  If it is
+# invoked with another interpreter, it re-executes itself with .venv's Python.
+# If the virtual environment has not been created, it exits with an error.
 
+import os
 import sys
-from memfo.main import run
+from pathlib import Path
+
+PROJECT_ROOT = Path(__file__).resolve().parent
+VENV_DIR = PROJECT_ROOT / ".venv"
+VENV_PYTHON = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+
+
+def _missing_venv_message() -> str:
+    return (
+        f"error: virtual environment not found at '{VENV_DIR}'.\n"
+        "       create it first, for example:\n"
+        "       python3 -m venv .venv\n"
+        "       .venv/bin/python -m pip install -e '.[dev]'"
+    )
+
+
+def main() -> int:
+    if not VENV_PYTHON.is_file():
+        print(_missing_venv_message(), file=sys.stderr)
+        return 1
+
+    # Re-exec with the venv interpreter when started with a different Python.
+    # Compare sys.prefix (not sys.executable): .venv/bin/python is usually a
+    # symlink to the system interpreter, so resolved paths can be identical.
+    if Path(sys.prefix).resolve() != VENV_DIR.resolve():
+        try:
+            os.execv(
+                str(VENV_PYTHON),
+                [str(VENV_PYTHON), str(Path(__file__).resolve()), *sys.argv[1:]],
+            )
+        except OSError as exc:
+            print(f"error: failed to start '{VENV_PYTHON}': {exc}", file=sys.stderr)
+            return 1
+
+    try:
+        from memfo.main import run
+    except ImportError as exc:
+        print(
+            f"error: the virtual environment at '{VENV_DIR}' is incomplete: {exc}\n"
+            "       reinstall dependencies with:\n"
+            "       .venv/bin/python -m pip install -e '.[dev]'",
+            file=sys.stderr,
+        )
+        return 1
+
+    return run()
+
 
 if __name__ == "__main__":
-    sys.exit(run())
+    sys.exit(main())
 

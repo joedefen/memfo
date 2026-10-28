@@ -30,7 +30,7 @@ Additionally, `memfod` is a utility script that starts `memfo` in a `tmux` sessi
 
 ## Example memfo Output
 ```
-[u]nits:MiB [i]tvl=15s [d]eltas:off zeros=off Dump [c]lock [e]dit ?=help
+[u]nits:MiB [i]tvl=15s [d]eltas:off zeros=off Dump [c]lock [e]dit ?:help
         0s        15s        30s        35s 10/20 22:44:08
    7,813.4    7,813.4    7,813.4    7,813.4 MemTotal
    1,344.1    1,318.9    1,306.6    1,335.2 MemAvailable
