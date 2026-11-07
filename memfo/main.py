@@ -2,13 +2,6 @@
 # -*- coding: utf-8 -*-
 """
 memfo is a viewer for /proc/meminfo
-TODO:
-- wall clock feature
-  - store both monotime and wall clock time with samples
-  - show (with spinner):
-    - monotime (default, as now)
-    - wall clock (two lines, "Mon 11/02" "09:30:26")
-    - both (three lines)
 """
 # pylint: disable=invalid-name,global-statement
 # pylint: disable=import-outside-toplevel,consider-using-with
@@ -196,6 +189,7 @@ class MemFo:
 
         self.message = ''
         self.message_mono = None
+        self.message_lifetime = 5.0 # seconds an ALERT stays in the header
 
         self.target_mono = 1
 
@@ -224,16 +218,16 @@ class MemFo:
         self.spin.add_key('clock', 'c - time style',
                         vals=['mono', 'wall', 'both'], obj=self.opts)
         self.spin.add_key('dump_report', 'D - dump history stats to /tmp/memfo.csv',
-                        vals=[False, True], obj=self.opts)
+                        keys=[ord('D')], genre='action', obj=self.opts)
         self.spin.add_key('edit_mode', 'e - edit mode', vals=[False, True],
                 comments='"*" freezes lines; "-" hides lines', obj=self.opts)
         self.spin.add_key('help_mode', '? - help screen',
-                        vals=[False, True], obj=self.opts)
+                        keys=[ord('?')], genre='action', obj=self.opts)
 
         keys_we_handle =  [ord('*'), ord('-'), ord('r'), ord('R'),
                             ord('['), ord('{'), ord('<'),
                             ord(']'), ord('}'), ord('>'),
-                            ord('C'), ord('q'), 0x3,
+                            ord('C'), ord('q'), 0x3, 27, # 27=ESC
                             curses.KEY_LEFT, curses.KEY_RIGHT,
                             curses.KEY_ENTER, 10] + list(self.spin.keys)
 
@@ -329,25 +323,27 @@ class MemFo:
         rows = {}
         delta = 'ON' if self.opts.delta else 'off'
         zeros = 'ON' if self.opts.zeros else 'off'
-        if self.message and self.message_mono is not None:
-            text = f"****  ALERT: {self.message} ****"
-            key = '_lead'
-            if time.monotonic() - self.message_mono >= 10.0:
-                self.message, self.message_mono = '', None
-        elif self.page == 'normal':
+        if self.page == 'normal':
             ## mono = time.monotonic() - self.mono_start
             text = (f'{self.dbinfo} [u]nits:{self.opts.units} [i]tvl={self.opts.report_interval}'
                     + f' [d]eltas:{delta} zeros={zeros} Dump [c]lock [e]dit ?:help [q]uit')
-            key = '_help'
         else:
             text = ('EDIT SCREEN:  e,ENTER:return'
                     + ' *:put-on-top -:hide-line [r]eset-line [R]reset-all-lines  ?:help')
-            key = '_help'
-        
+
         width = self.slice_width
         self.dead_width = (len(slices)-1)*(width+1) - 1
 
-        add_row(key=key, text=text)
+        add_row(key='_help', text=text)
+
+        # An alert (such as the one shown after a Dump) gets its own extra
+        # header row so that it does not replace the normal page header.
+        # It expires on its own after self.message_lifetime seconds.
+        if self.message and self.message_mono is not None:
+            if time.monotonic() - self.message_mono >= self.message_lifetime:
+                self.message, self.message_mono = '', None
+            else:
+                add_row(key='_lead', text=f"****  ALERT: {self.message} ****")
 
         for ii, info in enumerate(slices):
             for key in list(info.keys())[:count]:
@@ -499,14 +495,14 @@ class MemFo:
         """Populate help screen"""
         self.win.clear()
         self.win.add_header(
-                "-- HELP SCREEN ['?' or ENTER closes Help; Ctrl-C exits ] --",
+                "-- HELP SCREEN [ESC closes Help; Ctrl-C exits ] --",
                  attr=curses.A_BOLD)
         self.spin.show_help_nav_keys(self.win)
         self.spin.show_help_body(self.win)
-        self.win.put_body('Horizontal scrolling keys:', curses.A_UNDERLINE)
-        self.win.put_body(f'{"< LEFT > RIGHT :":>24} shift left or right one column')
-        self.win.put_body(f'{"{ } :":>24} shift about 12% left or right')
-        self.win.put_body(f'{"[ ] :":>24} shift max left or right')
+        self.win.add_body('Horizontal scrolling keys:', curses.A_UNDERLINE)
+        self.win.add_body(f'{"< LEFT > RIGHT :":>24} shift left or right one column')
+        self.win.add_body(f'{"{ } :":>24} shift about 12% left or right')
+        self.win.add_body(f'{"[ ] :":>24} shift max left or right')
         self.win.render()
 
     def render_normal_report(self):
@@ -618,12 +614,15 @@ class MemFo:
                             self.win.pick_pos = min(
                                 self.win.pick_pos+1, self.win.body.row_cnt-1)
 
-            elif key in (curses.KEY_ENTER, 10):
+            elif key == 27: # ESC closes the help screen
                 if self.opts.help_mode:
                     self.opts.help_mode = False
-                elif self.opts.edit_mode:
+                    set_page()
+
+            elif key in (curses.KEY_ENTER, 10):
+                if self.opts.edit_mode:
                     self.opts.edit_mode = False
-                set_page()
+                    set_page()
             
             elif key in (ord('['), ord('{'), ord('<'),
                             ord(']'), ord('}'), ord('>')):
