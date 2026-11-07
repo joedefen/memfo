@@ -6,3 +6,7 @@ __pycache__/*
 *.py[cod]
 *.bundle
 dist/*
+build/
+.coverage
+.pytest_cache/
+.ruff_cache/

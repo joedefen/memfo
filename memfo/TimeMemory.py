@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """ Encapsulates
     - TimeMemory - storing samples
     - TimeSlicer - selecting samples for display
@@ -7,7 +6,7 @@
 # pylint: disable=line-too-long,invalid-name,too-few-public-methods
 import copy
 from types import SimpleNamespace
-from typing import List, Dict, Any
+from typing import Any
 
 # --- The TimeMemory Class ---
 
@@ -20,20 +19,20 @@ class TimeMemory:
 
     # Configuration Constants
     MAX_INFOS: int = 600
-    COMPRESSION_MULTIPLIERS: List[int] = [5, 3, 2, 2, 5, 3, 2, 2, 4, 3, 2, 2, 2, 2]
+    COMPRESSION_MULTIPLIERS: list[int] = [5, 3, 2, 2, 5, 3, 2, 2, 4, 3, 2, 2, 2, 2]
     RETENTION_SEC: int = 24 * 60 * 60
 
     def __init__(self, memfo, initial_sample_secs: int=1):
         # List of info objects, ALWAYS running backwards: [Newest Info, ..., Oldest Info]
         self.memfo = memfo
-        self.infos: List[Dict[str, Any]] = []
+        self.infos: list[dict[str, Any]] = []
         self.info_secs = initial_sample_secs
         self.info_base_num: int = 0
         self.comp_idx: int = 0
         self.prev_info_mono = 0
         self.state = 'n/a'
 
-    def append_info(self, info: Dict[str, Any], force_compression=False):
+    def append_info(self, info: dict[str, Any], force_compression=False):
         """
         Add one sample to the history buffer.
 
@@ -138,7 +137,7 @@ class TimeSlicer:
         self.horizontal_moves = []  # pending moves
         self.tack = None # last rightmost column if pinned
 
-    def get_var_slices(self, max_col_cnt: int) -> List[Dict[str, Any]]:
+    def get_var_slices(self, max_col_cnt: int) -> list[dict[str, Any]]:
         """
         Variable Interval Display: Samples uniformly across the whole history.
         """
@@ -163,7 +162,7 @@ class TimeSlicer:
 
 
     def get_fixed_slices(self, interval_secs: int, max_col_cnt: int,
-                         is_mode_switch: bool) -> List[Dict[str, Any]]:
+                         is_mode_switch: bool) -> list[dict[str, Any]]:
         """
         Fixed Interval Display: Uses state to hold columns stable. The last column
         is always the "live" current sample. Historical columns only change when

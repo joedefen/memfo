@@ -1,5 +1,4 @@
 #!/usr/bin/env python3
-# -*- coding: utf-8 -*-
 """
 memfo is a viewer for /proc/meminfo
 """
@@ -11,21 +10,25 @@ memfo is a viewer for /proc/meminfo
 # pylint: disable=too-many-lines
 
 
-import sys
+import configparser
+import curses
 import os
 import re
-import traceback
-import configparser
-import time
-import curses
 import shutil
-import subprocess
 import signal
+import subprocess
+import sys
+import time
+import traceback
 from datetime import datetime
 from types import SimpleNamespace
-from console_window import ConsoleWindow , OptionSpinner
-from memfo.TimeMemory import TimeMemory, TimeSlicer
+
+from console_window import ConsoleWindow, OptionSpinner
+
+from memfo import __version__
 from memfo.dumper import dump_to_csv
+from memfo.TimeMemory import TimeMemory, TimeSlicer
+
 
 ##############################################################################
 def handle_quit_signal(signum=None, frame=None):
@@ -161,7 +164,7 @@ class MemFo:
         self.history = TimeMemory(self, initial_sample_secs=1)
         self.slicer = TimeSlicer(self.history)
         self.mono_start = time.monotonic()
-        self.fh = open('/proc/meminfo', 'r', encoding='utf-8')
+        self.fh = open('/proc/meminfo', encoding='utf-8')
         self.config_basename = args.config
         self.win = None  # ConsoleWindow
         self.spin = None # Option Spinner
@@ -669,6 +672,10 @@ def main():
     import argparse
 
     parser = argparse.ArgumentParser()
+    # What `bless` runs in its smoke venv before an upload; the release number
+    # has to come back out of the installed console script.
+    parser.add_argument('-V', '--version', action='version',
+            version=f'memfo {__version__}')
     parser.add_argument('-u', '--units', choices=('KiB', 'MB', 'MiB', 'GB', 'GiB', 'human'),
             default='MiB', help='units of memory [dflt=MiB]')
     parser.add_argument('-i', '--report-interval', choices=list(MemFo.report_intervals.keys()),

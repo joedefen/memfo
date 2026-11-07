@@ -1,7 +1,8 @@
 """ For dumping data to .csv """
 
 import csv
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+
 
 def dump_to_csv(infos):
     """
@@ -34,7 +35,7 @@ def dump_to_csv(infos):
         for key in data_keys:
             value = sample.get(key, 0)
             if key == '_time':
-                value = datetime.fromtimestamp(value, tz=timezone.utc).isoformat()
+                value = datetime.fromtimestamp(value, tz=UTC).isoformat()
             row.append(value) # Use .get() for safety
         data_rows.append(row)
 
@@ -51,5 +52,5 @@ def dump_to_csv(infos):
         num_samples = len(data_rows)
         return f"Dumped {num_samples} samples to {filename} (Units: Bytes)."
 
-    except IOError as e:
+    except OSError as e:
         return f"Dump failed: Cannot write to {filename}. Error: {e}"

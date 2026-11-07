@@ -139,7 +139,8 @@ def main():
     Replaces the current Python process with a bash shell that executes 
     the embedded script.
     """
-    import os, sys
+    import os
+    import sys
 
     # Executable path: The bash interpreter
     program = "/bin/bash"

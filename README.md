@@ -94,3 +94,18 @@ Normally, just use `memfod` but it can take one command argument:
 * `attach` - attach to the `memfo` running the special tmux session, starting if not running.
 
 You could use `start` to arrange for `memfod` to start on reboot using `cron` if desired.
+
+## Version
+
+`memfo --version` prints the release number and exits.
+
+## Development
+
+The checkout's virtualenv is the editable/debug environment (build it with
+`bt penv`; `bt edit` points `~/.local/bin` at the tree).  `./runner` runs the
+source without touching `~/.local/bin`.
+
+The release gate is `./bless`, emitted from `~/Projects/blessd/bless` and never
+edited here.  See [`tests/README-DEV.md`](tests/README-DEV.md) for the layout,
+the three gates CI and `./bless` share, the release steps and the adoption
+note.

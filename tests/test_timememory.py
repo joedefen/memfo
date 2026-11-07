@@ -6,7 +6,6 @@ logic can be safely refactored.
 
 Run with:  .venv/bin/python -m pytest -q
 """
-import pytest
 
 from memfo.TimeMemory import TimeMemory, TimeSlicer
 

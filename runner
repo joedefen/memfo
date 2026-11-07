@@ -5,6 +5,10 @@
 # This script always runs under the project's virtual environment.  If it is
 # invoked with another interpreter, it re-executes itself with .venv's Python.
 # If the virtual environment has not been created, it exits with an error.
+#
+# It is the non-invasive way to run the source: it does not touch
+# ~/.local/bin, so it never competes with a released install or `bt edit`.
+# Build the environment it needs with `bt penv`.
 
 import os
 import sys
@@ -18,9 +22,8 @@ VENV_PYTHON = VENV_DIR / ("Scripts/python.exe" if os.name == "nt" else "bin/pyth
 def _missing_venv_message() -> str:
     return (
         f"error: virtual environment not found at '{VENV_DIR}'.\n"
-        "       create it first, for example:\n"
-        "       python3 -m venv .venv\n"
-        "       .venv/bin/python -m pip install -e '.[dev]'"
+        "       create it first with the project tool:\n"
+        "       bt penv"
     )
 
 
@@ -47,8 +50,8 @@ def main() -> int:
     except ImportError as exc:
         print(
             f"error: the virtual environment at '{VENV_DIR}' is incomplete: {exc}\n"
-            "       reinstall dependencies with:\n"
-            "       .venv/bin/python -m pip install -e '.[dev]'",
+            "       rebuild it with the project tool:\n"
+            "       bt penv",
             file=sys.stderr,
         )
         return 1
